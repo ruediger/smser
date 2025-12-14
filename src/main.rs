@@ -1,8 +1,8 @@
 use clap::Parser;
 use quick_xml::de::from_str;
 use quick_xml::se::to_string;
-use serde::Deserialize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_repr::{Deserialize_repr, Serialize_repr};
 
 const MODEM_BASE_URL: &str = "http://192.168.8.1";
 
@@ -16,6 +16,31 @@ struct SessionInfo {
     token: String,
 }
 
+#[derive(Debug, PartialEq, Serialize_repr, Deserialize_repr)]
+#[repr(i32)]
+pub enum BoxType {
+    LocalInbox = 1,
+    LocalSent = 2,
+    LocalDraft = 3,
+    LocalTrash = 4,
+    SimInbox = 5,
+    SimSent = 6,
+    SimDraft = 7,
+    MixInbox = 8,
+    MixSent = 9,
+    MixDraft = 10,
+    Unknown = -1,
+}
+
+#[derive(Debug, PartialEq, Serialize_repr, Deserialize_repr)]
+#[repr(i32)]
+pub enum SortType {
+    Date = 0,
+    Phone = 1,
+    Index = 2,
+    Unknown = -1,
+}
+
 /// Represents the SMS list request XML
 #[derive(Debug, Serialize, PartialEq)]
 #[serde(rename = "request")]
@@ -25,17 +50,38 @@ struct SmsListRequest {
     #[serde(rename = "ReadCount")]
     read_count: i32,
     #[serde(rename = "BoxType")]
-    box_type: i32,
+    box_type: BoxType,
     #[serde(rename = "SortType")]
-    sort_type: i32,
+    sort_type: SortType,
     #[serde(rename = "Ascending")]
     ascending: i32,
     #[serde(rename = "UnreadPreferred")]
     unread_preferred: i32,
 }
 
+#[derive(Debug, PartialEq, Serialize_repr, Deserialize_repr)]
+#[repr(i32)]
+pub enum SmsType {
+    Single = 1,
+    Multipart = 2,
+    Unicode = 5,
+    DeliveryConfirmationSuccess = 7,
+    DeliveryConfirmationFailure = 8,
+    Unknown = -1,
+}
+
+#[derive(Debug, PartialEq, Serialize_repr, Deserialize_repr)]
+#[repr(i32)]
+pub enum Priority {
+    Normal = 0,
+    Interactive = 1,
+    Urgent = 2,
+    Emergency = 3,
+    Unknown = 4,
+}
+
 /// Represents a single SMS message in the response
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename = "Message")]
 struct SmsMessage {
     #[serde(rename = "Smstat")]
@@ -53,13 +99,13 @@ struct SmsMessage {
     #[serde(rename = "SaveType")]
     save_type: i32,
     #[serde(rename = "Priority")]
-    priority: i32,
+    priority: Priority,
     #[serde(rename = "SmsType")]
-    sms_type: i32,
+    sms_type: SmsType,
 }
 
 /// Represents the Messages wrapper in the SMS list response
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename = "Messages")]
 struct SmsMessages {
     #[serde(rename = "Message", default)]
@@ -67,7 +113,7 @@ struct SmsMessages {
 }
 
 /// Represents the SMS list response XML
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename = "response")]
 struct SmsListResponse {
     #[serde(rename = "Count")]
@@ -77,15 +123,15 @@ struct SmsListResponse {
 }
 
 /// Fetches the SMS list from the modem.
-fn get_sms_list(session_id: &str, token: &str) -> Result<SmsListResponse, Box<dyn std::error::Error>> {
+fn get_sms_list(session_id: &str, token: &str, box_type: BoxType, sort_type: SortType) -> Result<SmsListResponse, Box<dyn std::error::Error>> {
     let client = reqwest::blocking::Client::new();
     let url = format!("{}/api/sms/sms-list", MODEM_BASE_URL);
 
     let sms_list_request = SmsListRequest {
         page_index: 1,
         read_count: 20, // Fetching up to 20 messages for now
-        box_type: 1, // Inbox
-        sort_type: 0,
+        box_type,
+        sort_type,
         ascending: 0,
         unread_preferred: 0,
     };
@@ -227,13 +273,15 @@ fn main() {
                     }
                 },
                 SmsCommand::Receive => {
-                    match get_sms_list(&session_id, &token) {
+                    match get_sms_list(&session_id, &token, BoxType::LocalInbox, SortType::Date) {
                         Ok(response) => {
                             println!("Received {} SMS messages:", response.count);
                             for msg in response.messages.message {
                                 println!("  From: {}", msg.phone);
                                 println!("  Content: {}", msg.content);
                                 println!("  Date: {}", msg.date);
+                                println!("  Priority: {:?}", msg.priority);
+                                println!("  SmsType: {:?}", msg.sms_type);
                                 println!("  --------------------");
                             }
                         },
@@ -302,7 +350,7 @@ mod tests {
     #[test]
     fn test_get_sms_list_error() {
         // This test expects an error since the modem is not likely to be available
-        let result = get_sms_list("dummy_session_id", "dummy_token");
+        let result = get_sms_list("dummy_session_id", "dummy_token", BoxType::LocalInbox, SortType::Date);
         assert!(result.is_err());
     }
 }
