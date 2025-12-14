@@ -198,7 +198,7 @@ fn get_session_info() -> Result<(String, String), Box<dyn std::error::Error>> {
 }
 
 /// Sends an SMS message via the modem.
-fn send_sms(session_id: &str, token: &str, to: &str, message: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn send_sms(session_id: &str, token: &str, to: &str, message: &str, dry_run: bool) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::blocking::Client::new();
     let url = format!("{}/api/sms/send-sms", MODEM_BASE_URL);
 
@@ -216,20 +216,25 @@ fn send_sms(session_id: &str, token: &str, to: &str, message: &str) -> Result<()
 
     let cookie = format!("SessionID={}", session_id);
 
-    let response = client.post(&url)
-        .header("Cookie", cookie)
-        .header("X-Requested-With", "XMLHttpRequest")
-        .header("__RequestVerificationToken", token)
-        .header("Content-Type", "text/xml")
-        .body(xml_payload)
-        .send()?
-        .text()?;
-
-    if response.contains("<response>OK</response>") {
-        println!("SMS sent successfully!");
+    if dry_run {
+        println!("DRY RUN: Not sending message.");
         Ok(())
     } else {
-        Err(format!("Failed to send SMS: {}", response).into())
+        let response = client.post(&url)
+            .header("Cookie", cookie)
+            .header("X-Requested-With", "XMLHttpRequest")
+            .header("__RequestVerificationToken", token)
+            .header("Content-Type", "text/xml")
+            .body(xml_payload)
+            .send()?
+            .text()?;
+
+        if response.contains("<response>OK</response>") {
+            println!("SMS sent successfully!");
+            Ok(())
+        } else {
+            Err(format!("Failed to send SMS: {}", response).into())
+        }
     }
 }
 
@@ -252,6 +257,10 @@ enum SmsCommand {
         /// The message to send
         #[arg(short, long)]
         message: String,
+
+        /// Do not actually send a message
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Receive SMS messages
     Receive,
@@ -266,8 +275,8 @@ fn main() {
             println!("Token: {}", token);
 
             match args.command {
-                SmsCommand::Send { to, message } => {
-                    match send_sms(&session_id, &token, &to, &message) {
+                SmsCommand::Send { to, message, dry_run } => {
+                    match send_sms(&session_id, &token, &to, &message, dry_run) {
                         Ok(_) => {},
                         Err(e) => eprintln!("Error sending SMS: {}", e),
                     }
