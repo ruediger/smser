@@ -147,15 +147,6 @@ pub enum SmsStat {
     Unknown = -1, // Default variant for unknown values
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize_repr, Deserialize_repr, Display, ValueEnum, EnumString)]
-#[strum(serialize_all = "kebab-case")]
-#[repr(i32)]
-pub enum SaveType {
-    Local = 0,
-    Sim = 1,
-    Unknown = -1, // Default variant for unknown values
-}
-
 /// Represents a single SMS message in the response
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename = "Message")]
@@ -173,7 +164,7 @@ pub struct SmsMessage {
     #[serde(rename = "Sca")]
     pub sca: String,
     #[serde(rename = "SaveType")]
-    pub save_type: SaveType,
+    pub save_type: i32,
     #[serde(rename = "Priority")]
     pub priority: Priority,
     #[serde(rename = "SmsType")]
@@ -226,15 +217,14 @@ pub fn get_sms_list(modem_url: &str, session_id: &str, token: &str, box_type: Bo
     
     let response_text = response.text()?;
 
-    if response_text.contains("<response>OK</response>") {
-        let sms_list_response: SmsListResponse = from_str(&response_text)?;
-        Ok(sms_list_response)
-    } else {
-        // Try to parse as error response
-        let error_response: Result<ModemErrorResponse, _> = from_str(&response_text);
-        match error_response {
-            Ok(err) => Err(Error::ModemError { code: err.code, message: err.message }),
-            Err(_) => Err(Error::Other(format!("Failed to get SMS list: {}", response_text))),
+    match from_str::<SmsListResponse>(&response_text) {
+        Ok(sms_list_response) => Ok(sms_list_response),
+        Err(e) => {
+            let error_response: Result<ModemErrorResponse, _> = from_str(&response_text);
+            match error_response {
+                Ok(err) => Err(Error::ModemError { code: err.code, message: err.message }),
+                Err(_) => Err(Error::Other(format!("Failed to get SMS list: {} Error: {}", response_text, e))),
+            }
         }
     }
 }
