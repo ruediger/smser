@@ -1,3 +1,4 @@
-fn main() {
-    smser::cli::run();
+#[tokio::main]
+async fn main() {
+    smser::cli::run().await;
 }

@@ -2,7 +2,7 @@ use quick_xml::de::from_str;
 use quick_xml::se::to_string;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use reqwest::blocking::Client as HttpClient;
+use reqwest::Client as HttpClient;
 use strum_macros::{Display, EnumString};
 use clap::ValueEnum;
 
@@ -190,8 +190,10 @@ pub struct SmsListResponse {
 }
 
 /// Fetches the SMS list from the modem.
-pub fn get_sms_list(modem_url: &str, session_id: &str, token: &str, box_type: BoxType, sort_type: SortType, read_count: u32, ascending: bool, unread_preferred: bool) -> Result<SmsListResponse, Error> {
-    let client = HttpClient::new();
+pub async fn get_sms_list(modem_url: &str, session_id: &str, token: &str, box_type: BoxType, sort_type: SortType, read_count: u32, ascending: bool, unread_preferred: bool) -> Result<SmsListResponse, Error> {
+    let client = HttpClient::builder()
+        .timeout(std::time::Duration::new(10, 0)) // 10 seconds
+        .build()?;
     let url = format!("{}/api/sms/sms-list", modem_url);
 
     let sms_list_request = SmsListRequest {
@@ -213,9 +215,9 @@ pub fn get_sms_list(modem_url: &str, session_id: &str, token: &str, box_type: Bo
         .header("__RequestVerificationToken", token)
         .header("Content-Type", "text/xml")
         .body(xml_payload)
-        .send()?;
+        .send().await?;
     
-    let response_text = response.text()?;
+    let response_text = response.text().await?;
 
     match from_str::<SmsListResponse>(&response_text) {
         Ok(sms_list_response) => Ok(sms_list_response),
@@ -257,11 +259,13 @@ pub struct SmsRequest {
 }
 
 /// Fetches the session ID and token from the modem.
-pub fn get_session_info(modem_url: &str) -> Result<(String, String), Error> {
-    let client = HttpClient::new();
+pub async fn get_session_info(modem_url: &str) -> Result<(String, String), Error> {
+    let client = HttpClient::builder()
+        .timeout(std::time::Duration::new(10, 0)) // 10 seconds
+        .build()?;
     let url = format!("{}/api/webserver/SesTokInfo", modem_url);
-    let response = client.get(&url).send()?;
-    let response_text = response.text()?;
+    let response = client.get(&url).send().await?;
+    let response_text = response.text().await?;
 
     let session_info: Result<SessionInfo, _> = from_str(&response_text);
 
@@ -284,8 +288,10 @@ pub fn get_session_info(modem_url: &str) -> Result<(String, String), Error> {
 }
 
 /// Sends an SMS message via the modem.
-pub fn send_sms(modem_url: &str, session_id: &str, token: &str, to: &str, message: &str, dry_run: bool) -> Result<(), Error> {
-    let client = HttpClient::new();
+pub async fn send_sms(modem_url: &str, session_id: &str, token: &str, to: &str, message: &str, dry_run: bool) -> Result<(), Error> {
+    let client = HttpClient::builder()
+        .timeout(std::time::Duration::new(10, 0)) // 10 seconds
+        .build()?;
     let url = format!("{}/api/sms/send-sms", modem_url);
 
     let sms_request = SmsRequest {
@@ -312,9 +318,9 @@ pub fn send_sms(modem_url: &str, session_id: &str, token: &str, to: &str, messag
             .header("__RequestVerificationToken", token)
             .header("Content-Type", "text/xml")
             .body(xml_payload)
-            .send()?;
+            .send().await?;
         
-        let response_text = response.text()?;
+        let response_text = response.text().await?;
 
         if response_text.contains("<response>OK</response>") {
             println!("SMS sent successfully!");

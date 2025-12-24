@@ -1,6 +1,8 @@
 use clap::Parser;
 use crate::modem::{self, BoxType, SortType};
 use serde_json;
+use tokio::net::TcpListener;
+use std::net::SocketAddr;
 
 /// Simple program to send SMS via a Huawei E3372 modem
 #[derive(Parser, Debug)]
@@ -56,52 +58,76 @@ pub enum SmsCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Start the web server
+    Serve {
+        /// The port to listen on
+        #[arg(short, long, default_value_t = 8080)]
+        port: u16,
+    },
 }
 
-pub fn run() {
+pub async fn run() {
     let args = Args::parse();
 
-    match modem::get_session_info(&args.modem_url) {
-        Ok((session_id, token)) => {
+    match args.command {
+        SmsCommand::Send { to, message, dry_run } => {
+            let (session_id, token) = match modem::get_session_info(&args.modem_url).await {
+                Ok((s, t)) => (s, t),
+                Err(e) => {
+                    eprintln!("Error getting session info: {}", e);
+                    return;
+                }
+            };
             println!("Session ID: {}", session_id);
             println!("Token: {}", token);
 
-            match args.command {
-                SmsCommand::Send { to, message, dry_run } => {
-                    if let Err(e) = modem::send_sms(&args.modem_url, &session_id, &token, &to, &message, dry_run) {
-                        eprintln!("Error sending SMS: {}", e);
-                    }
-                },
-                SmsCommand::Receive { count, ascending, unread_preferred, box_type, sort_by, json } => {
-                    match modem::get_sms_list(&args.modem_url, &session_id, &token, box_type, sort_by, count, ascending, unread_preferred) {
-                        Ok(response) => {
-                            if json {
-                                match serde_json::to_string_pretty(&response.messages.message) {
-                                    Ok(json_output) => println!("{}", json_output),
-                                    Err(e) => eprintln!("Error serializing to JSON: {}", e),
-                                }
-                            } else {
-                                println!("Received {} SMS messages:", response.count);
-                                for msg in response.messages.message {
-                                    println!("  From: {}", msg.phone);
-                                    println!("  Content: {}", msg.content);
-                                    println!("  Date: {}", msg.date);
-                                    println!("  Priority: {}", msg.priority);
-                                    println!("  SmsType: {}", msg.sms_type);
-                                    println!("  Smstat: {}", msg.smstat);
-                                    println!("  SaveType: {}", msg.save_type);
-                                    println!("  --------------------");
-                                }
-                            }
-                        },
-                        Err(e) => eprintln!("Error receiving SMS: {}", e),
-                    }
-                },
+            if let Err(e) = modem::send_sms(&args.modem_url, &session_id, &token, &to, &message, dry_run).await {
+                eprintln!("Error sending SMS: {}", e);
             }
-        }
-        Err(e) => {
-            eprintln!("Error getting session info: {}", e);
-        }
+        },
+        SmsCommand::Receive { count, ascending, unread_preferred, box_type, sort_by, json } => {
+            let (session_id, token) = match modem::get_session_info(&args.modem_url).await {
+                Ok((s, t)) => (s, t),
+                Err(e) => {
+                    eprintln!("Error getting session info: {}", e);
+                    return;
+                }
+            };
+            println!("Session ID: {}", session_id);
+            println!("Token: {}", token);
+
+            match modem::get_sms_list(&args.modem_url, &session_id, &token, box_type, sort_by, count, ascending, unread_preferred).await {
+                Ok(response) => {
+                    if json {
+                        match serde_json::to_string_pretty(&response.messages.message) {
+                            Ok(json_output) => println!("{}", json_output),
+                            Err(e) => eprintln!("Error serializing to JSON: {}", e),
+                        }
+                    } else {
+                        println!("Received {} SMS messages:", response.count);
+                        for msg in response.messages.message {
+                            println!("  From: {}", msg.phone);
+                            println!("  Content: {}", msg.content);
+                            println!("  Date: {}", msg.date);
+                            println!("  Priority: {}", msg.priority);
+                            println!("  SmsType: {}", msg.sms_type);
+                            println!("  Smstat: {}", msg.smstat);
+                            println!("  SaveType: {}", msg.save_type);
+                            println!("  --------------------");
+                        }
+                    }
+                },
+                Err(e) => eprintln!("Error receiving SMS: {}", e),
+            }
+        },
+        SmsCommand::Serve { port } => {
+            // Call server start function here
+            println!("Starting server on port {}", port);
+            let addr = SocketAddr::from(([0, 0, 0, 0], port));
+            let listener = TcpListener::bind(&addr).await.expect("Failed to bind to port");
+            let (_tx, rx) = tokio::sync::oneshot::channel(); // Create a channel
+            crate::server::start_server(listener, args.modem_url, rx).await;
+        },
     }
 }
 
@@ -158,30 +184,43 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_args_parsing_serve() {
+        let args = Args::try_parse_from(&["smser", "--modem-url", "http://test.com", "serve", "--port", "9000"])
+            .expect("Failed to parse arguments");
+        assert_eq!(args.modem_url, "http://test.com");
+        match args.command {
+            SmsCommand::Serve { port } => {
+                assert_eq!(port, 9000);
+            },
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
     // These tests rely on the modem being unavailable, which is typically true during CI/CD or local development without a modem.
     // They verify that the error handling paths are correctly triggered.
 
-    #[test]
-    fn test_get_session_info_error() {
-        let result = modem::get_session_info("http://nonexistent.com");
+    #[tokio::test]
+    async fn test_get_session_info_error() {
+        let result = modem::get_session_info("http://nonexistent.com").await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_send_sms_dry_run() {
-        let result = modem::send_sms("http://nonexistent.com", "dummy_session_id", "dummy_token", "+1234567890", "Test message", true);
+    #[tokio::test]
+    async fn test_send_sms_dry_run() {
+        let result = modem::send_sms("http://nonexistent.com", "dummy_session_id", "dummy_token", "+1234567890", "Test message", true).await;
         assert!(result.is_ok());
     }
 
-    #[test]
-    fn test_send_sms_error() {
-        let result = modem::send_sms("http://nonexistent.com", "dummy_session_id", "dummy_token", "+1234567890", "Test message", false);
+    #[tokio::test]
+    async fn test_send_sms_error() {
+        let result = modem::send_sms("http://nonexistent.com", "dummy_session_id", "dummy_token", "+1234567890", "Test message", false).await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_get_sms_list_error() {
-        let result = modem::get_sms_list("http://nonexistent.com", "dummy_session_id", "dummy_token", BoxType::LocalInbox, SortType::Date, 20, false, false);
+    #[tokio::test]
+    async fn test_get_sms_list_error() {
+        let result = modem::get_sms_list("http://nonexistent.com", "dummy_session_id", "dummy_token", BoxType::LocalInbox, SortType::Date, 20, false, false).await;
         assert!(result.is_err());
     }
 }
