@@ -1,11 +1,11 @@
+use crate::modem::{self, BoxType, Error as ModemError, SortType}; // Import modem module and alias Error
+use axum::http::StatusCode; // For HTTP status codes
 use axum::{
+    Json, Router,
     extract::{Query, State},
     routing::{get, post},
-    Json, Router,
 };
-use axum::http::StatusCode; // For HTTP status codes
 use serde::{Deserialize, Serialize};
-use crate::modem::{self, BoxType, SortType, Error as ModemError}; // Import modem module and alias Error
 use tokio::net::TcpListener;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -21,8 +21,14 @@ struct AppState {
 
 use tokio::sync::oneshot; // New import
 
-pub async fn start_server(listener: TcpListener, modem_url: String, shutdown_signal: oneshot::Receiver<()>) {
-    let app_state = AppState { modem_url: modem_url.clone() };
+pub async fn start_server(
+    listener: TcpListener,
+    modem_url: String,
+    shutdown_signal: oneshot::Receiver<()>,
+) {
+    let app_state = AppState {
+        modem_url: modem_url.clone(),
+    };
 
     let app = Router::new()
         .route("/", get(handler))
@@ -54,16 +60,33 @@ async fn send_sms_handler(
         Ok((s, t)) => (s, t),
         Err(e) => {
             eprintln!("Error getting session info: {}", e);
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to get session info: {}", e)));
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get session info: {}", e),
+            ));
         }
     };
 
-    match modem::send_sms(&state.modem_url, &session_id, &token, &payload.to, &payload.message, false).await {
-        Ok(_) => Ok(Json(serde_json::json!({"status": "success", "message": "SMS sent successfully!"}))),
+    match modem::send_sms(
+        &state.modem_url,
+        &session_id,
+        &token,
+        &payload.to,
+        &payload.message,
+        false,
+    )
+    .await
+    {
+        Ok(_) => Ok(Json(
+            serde_json::json!({"status": "success", "message": "SMS sent successfully!"}),
+        )),
         Err(e) => {
             eprintln!("Error sending SMS: {}", e);
             let status = match e {
-                ModemError::ModemError { code: _, message: _ } => StatusCode::BAD_REQUEST, // Or map specific modem codes
+                ModemError::ModemError {
+                    code: _,
+                    message: _,
+                } => StatusCode::BAD_REQUEST, // Or map specific modem codes
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
             Err((status, format!("Failed to send SMS: {}", e)))
@@ -85,9 +108,15 @@ pub struct GetSmsRequest {
     sort_by: SortType,
 }
 
-fn default_count() -> u32 { 20 }
-fn default_box_type() -> BoxType { BoxType::LocalInbox }
-fn default_sort_type() -> SortType { SortType::Date }
+fn default_count() -> u32 {
+    20
+}
+fn default_box_type() -> BoxType {
+    BoxType::LocalInbox
+}
+fn default_sort_type() -> SortType {
+    SortType::Date
+}
 
 async fn get_sms_handler(
     State(state): State<AppState>,
@@ -97,7 +126,10 @@ async fn get_sms_handler(
         Ok((s, t)) => (s, t),
         Err(e) => {
             eprintln!("Error getting session info: {}", e);
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to get session info: {}", e)));
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get session info: {}", e),
+            ));
         }
     };
 
@@ -110,12 +142,19 @@ async fn get_sms_handler(
         params.count,
         params.ascending,
         params.unread_preferred,
-    ).await {
-        Ok(response) => Ok(Json(serde_json::json!({"status": "success", "messages": response.messages.message}))),
+    )
+    .await
+    {
+        Ok(response) => Ok(Json(
+            serde_json::json!({"status": "success", "messages": response.messages.message}),
+        )),
         Err(e) => {
             eprintln!("Error receiving SMS: {}", e);
             let status = match e {
-                ModemError::ModemError { code: _, message: _ } => StatusCode::BAD_REQUEST,
+                ModemError::ModemError {
+                    code: _,
+                    message: _,
+                } => StatusCode::BAD_REQUEST,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
             Err((status, format!("Failed to get SMS list: {}", e)))
@@ -126,9 +165,9 @@ async fn get_sms_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::StatusCode;
     use reqwest::Client;
-    use std::time::Duration;
-    use axum::http::StatusCode; // For StatusCode in tests
+    use std::time::Duration; // For StatusCode in tests
 
     #[tokio::test]
     async fn test_start_server_hello_world() {
@@ -181,7 +220,10 @@ mod tests {
         // Make a request to the server
         let client = Client::new();
         let response = client
-            .get(format!("http://127.0.0.1:{}/get-sms?count=1&box_type=1", port))
+            .get(format!(
+                "http://127.0.0.1:{}/get-sms?count=1&box_type=1",
+                port
+            ))
             .send()
             .await
             .expect("Failed to send request");

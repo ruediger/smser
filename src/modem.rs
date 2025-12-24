@@ -1,10 +1,10 @@
+use clap::ValueEnum;
 use quick_xml::de::from_str;
 use quick_xml::se::to_string;
+use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use reqwest::Client as HttpClient;
 use strum_macros::{Display, EnumString};
-use clap::ValueEnum;
 
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename = "error")]
@@ -18,10 +18,7 @@ pub enum Error {
     ReqwestError(reqwest::Error),
     XmlParseError(quick_xml::DeError),
     XmlSerializeError(quick_xml::SeError),
-    ModemError {
-        code: i32,
-        message: String,
-    },
+    ModemError { code: i32, message: String },
     SessionError(String),
     Other(String),
 }
@@ -32,7 +29,9 @@ impl std::fmt::Display for Error {
             Error::ReqwestError(e) => write!(f, "HTTP request error: {}", e),
             Error::XmlParseError(e) => write!(f, "XML parsing error: {}", e),
             Error::XmlSerializeError(e) => write!(f, "XML serialization error: {}", e),
-            Error::ModemError { code, message } => write!(f, "Modem error code {}: {}", code, message),
+            Error::ModemError { code, message } => {
+                write!(f, "Modem error code {}: {}", code, message)
+            }
             Error::SessionError(msg) => write!(f, "Session error: {}", msg),
             Error::Other(msg) => write!(f, "Other error: {}", msg),
         }
@@ -59,7 +58,6 @@ impl From<quick_xml::SeError> for Error {
     }
 }
 
-
 /// Represents the XML response from /api/webserver/SesTokInfo
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(rename = "response")]
@@ -70,7 +68,9 @@ pub struct SessionInfo {
     pub token: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize_repr, Deserialize_repr, Display, ValueEnum, EnumString)]
+#[derive(
+    Clone, Debug, PartialEq, Serialize_repr, Deserialize_repr, Display, ValueEnum, EnumString,
+)]
 #[strum(serialize_all = "kebab-case")]
 #[repr(i32)]
 pub enum BoxType {
@@ -87,7 +87,9 @@ pub enum BoxType {
     Unknown = -1, // Default variant for unknown values
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize_repr, Deserialize_repr, Display, ValueEnum, EnumString)]
+#[derive(
+    Clone, Debug, PartialEq, Serialize_repr, Deserialize_repr, Display, ValueEnum, EnumString,
+)]
 #[strum(serialize_all = "kebab-case")]
 #[repr(i32)]
 pub enum SortType {
@@ -115,7 +117,9 @@ pub struct SmsListRequest {
     pub unread_preferred: i32,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize_repr, Deserialize_repr, Display, ValueEnum, EnumString)]
+#[derive(
+    Clone, Debug, PartialEq, Serialize_repr, Deserialize_repr, Display, ValueEnum, EnumString,
+)]
 #[strum(serialize_all = "kebab-case")]
 #[repr(i32)]
 pub enum SmsType {
@@ -127,7 +131,9 @@ pub enum SmsType {
     Unknown = -1, // Default variant for unknown values
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize_repr, Deserialize_repr, Display, ValueEnum, EnumString)]
+#[derive(
+    Clone, Debug, PartialEq, Serialize_repr, Deserialize_repr, Display, ValueEnum, EnumString,
+)]
 #[strum(serialize_all = "kebab-case")]
 #[repr(i32)]
 pub enum Priority {
@@ -138,7 +144,9 @@ pub enum Priority {
     Unknown = 4, // Default variant for unknown values
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize_repr, Deserialize_repr, Display, ValueEnum, EnumString)]
+#[derive(
+    Clone, Debug, PartialEq, Serialize_repr, Deserialize_repr, Display, ValueEnum, EnumString,
+)]
 #[strum(serialize_all = "kebab-case")]
 #[repr(i32)]
 pub enum SmsStat {
@@ -190,7 +198,16 @@ pub struct SmsListResponse {
 }
 
 /// Fetches the SMS list from the modem.
-pub async fn get_sms_list(modem_url: &str, session_id: &str, token: &str, box_type: BoxType, sort_type: SortType, read_count: u32, ascending: bool, unread_preferred: bool) -> Result<SmsListResponse, Error> {
+pub async fn get_sms_list(
+    modem_url: &str,
+    session_id: &str,
+    token: &str,
+    box_type: BoxType,
+    sort_type: SortType,
+    read_count: u32,
+    ascending: bool,
+    unread_preferred: bool,
+) -> Result<SmsListResponse, Error> {
     let client = HttpClient::builder()
         .timeout(std::time::Duration::new(10, 0)) // 10 seconds
         .build()?;
@@ -209,14 +226,16 @@ pub async fn get_sms_list(modem_url: &str, session_id: &str, token: &str, box_ty
 
     let cookie = format!("SessionID={}", session_id);
 
-    let response = client.post(&url)
+    let response = client
+        .post(&url)
         .header("Cookie", cookie)
         .header("X-Requested-With", "XMLHttpRequest")
         .header("__RequestVerificationToken", token)
         .header("Content-Type", "text/xml")
         .body(xml_payload)
-        .send().await?;
-    
+        .send()
+        .await?;
+
     let response_text = response.text().await?;
 
     match from_str::<SmsListResponse>(&response_text) {
@@ -224,8 +243,14 @@ pub async fn get_sms_list(modem_url: &str, session_id: &str, token: &str, box_ty
         Err(e) => {
             let error_response: Result<ModemErrorResponse, _> = from_str(&response_text);
             match error_response {
-                Ok(err) => Err(Error::ModemError { code: err.code, message: err.message }),
-                Err(_) => Err(Error::Other(format!("Failed to get SMS list: {} Error: {}", response_text, e))),
+                Ok(err) => Err(Error::ModemError {
+                    code: err.code,
+                    message: err.message,
+                }),
+                Err(_) => Err(Error::Other(format!(
+                    "Failed to get SMS list: {} Error: {}",
+                    response_text, e
+                ))),
             }
         }
     }
@@ -271,24 +296,40 @@ pub async fn get_session_info(modem_url: &str) -> Result<(String, String), Error
 
     match session_info {
         Ok(info) => {
-            let session_id = info.session_id
+            let session_id = info
+                .session_id
                 .strip_prefix("SessionID=")
-                .ok_or_else(|| Error::SessionError("SesInfo did not start with 'SessionID='".to_string()))?
+                .ok_or_else(|| {
+                    Error::SessionError("SesInfo did not start with 'SessionID='".to_string())
+                })?
                 .to_string();
             Ok((session_id, info.token))
-        },
+        }
         Err(_) => {
             let error_response: Result<ModemErrorResponse, _> = from_str(&response_text);
             match error_response {
-                Ok(err) => Err(Error::ModemError { code: err.code, message: err.message }),
-                Err(_) => Err(Error::Other(format!("Failed to get session info: {}", response_text))),
+                Ok(err) => Err(Error::ModemError {
+                    code: err.code,
+                    message: err.message,
+                }),
+                Err(_) => Err(Error::Other(format!(
+                    "Failed to get session info: {}",
+                    response_text
+                ))),
             }
         }
     }
 }
 
 /// Sends an SMS message via the modem.
-pub async fn send_sms(modem_url: &str, session_id: &str, token: &str, to: &str, message: &str, dry_run: bool) -> Result<(), Error> {
+pub async fn send_sms(
+    modem_url: &str,
+    session_id: &str,
+    token: &str,
+    to: &str,
+    message: &str,
+    dry_run: bool,
+) -> Result<(), Error> {
     let client = HttpClient::builder()
         .timeout(std::time::Duration::new(10, 0)) // 10 seconds
         .build()?;
@@ -296,7 +337,9 @@ pub async fn send_sms(modem_url: &str, session_id: &str, token: &str, to: &str, 
 
     let sms_request = SmsRequest {
         index: -1,
-        phones: Phones { phone: vec![to.to_string()] },
+        phones: Phones {
+            phone: vec![to.to_string()],
+        },
         sca: "".to_string(),
         content: message.to_string(),
         length: message.len() as i32,
@@ -312,14 +355,16 @@ pub async fn send_sms(modem_url: &str, session_id: &str, token: &str, to: &str, 
         println!("DRY RUN: Not sending message.");
         Ok(())
     } else {
-        let response = client.post(&url)
+        let response = client
+            .post(&url)
             .header("Cookie", cookie)
             .header("X-Requested-With", "XMLHttpRequest")
             .header("__RequestVerificationToken", token)
             .header("Content-Type", "text/xml")
             .body(xml_payload)
-            .send().await?;
-        
+            .send()
+            .await?;
+
         let response_text = response.text().await?;
 
         if response_text.contains("<response>OK</response>") {
@@ -328,8 +373,14 @@ pub async fn send_sms(modem_url: &str, session_id: &str, token: &str, to: &str, 
         } else {
             let error_response: Result<ModemErrorResponse, _> = from_str(&response_text);
             match error_response {
-                Ok(err) => Err(Error::ModemError { code: err.code, message: err.message }),
-                Err(_) => Err(Error::Other(format!("Failed to send SMS: {}", response_text))),
+                Ok(err) => Err(Error::ModemError {
+                    code: err.code,
+                    message: err.message,
+                }),
+                Err(_) => Err(Error::Other(format!(
+                    "Failed to send SMS: {}",
+                    response_text
+                ))),
             }
         }
     }

@@ -1,8 +1,8 @@
-use clap::Parser;
 use crate::modem::{self, BoxType, SortType};
+use clap::Parser;
 use serde_json;
-use tokio::net::TcpListener;
 use std::net::SocketAddr;
+use tokio::net::TcpListener;
 
 /// Simple program to send SMS via a Huawei E3372 modem
 #[derive(Parser, Debug)]
@@ -35,7 +35,7 @@ pub enum SmsCommand {
     /// Receive SMS messages
     Receive {
         /// How many messages to read.
-        #[arg(long,default_value_t=20)]
+        #[arg(long, default_value_t = 20)]
         count: u32,
 
         /// Sort in ascending order?
@@ -70,7 +70,11 @@ pub async fn run() {
     let args = Args::parse();
 
     match args.command {
-        SmsCommand::Send { to, message, dry_run } => {
+        SmsCommand::Send {
+            to,
+            message,
+            dry_run,
+        } => {
             let (session_id, token) = match modem::get_session_info(&args.modem_url).await {
                 Ok((s, t)) => (s, t),
                 Err(e) => {
@@ -81,11 +85,20 @@ pub async fn run() {
             println!("Session ID: {}", session_id);
             println!("Token: {}", token);
 
-            if let Err(e) = modem::send_sms(&args.modem_url, &session_id, &token, &to, &message, dry_run).await {
+            if let Err(e) =
+                modem::send_sms(&args.modem_url, &session_id, &token, &to, &message, dry_run).await
+            {
                 eprintln!("Error sending SMS: {}", e);
             }
-        },
-        SmsCommand::Receive { count, ascending, unread_preferred, box_type, sort_by, json } => {
+        }
+        SmsCommand::Receive {
+            count,
+            ascending,
+            unread_preferred,
+            box_type,
+            sort_by,
+            json,
+        } => {
             let (session_id, token) = match modem::get_session_info(&args.modem_url).await {
                 Ok((s, t)) => (s, t),
                 Err(e) => {
@@ -96,7 +109,18 @@ pub async fn run() {
             println!("Session ID: {}", session_id);
             println!("Token: {}", token);
 
-            match modem::get_sms_list(&args.modem_url, &session_id, &token, box_type, sort_by, count, ascending, unread_preferred).await {
+            match modem::get_sms_list(
+                &args.modem_url,
+                &session_id,
+                &token,
+                box_type,
+                sort_by,
+                count,
+                ascending,
+                unread_preferred,
+            )
+            .await
+            {
                 Ok(response) => {
                     if json {
                         match serde_json::to_string_pretty(&response.messages.message) {
@@ -116,18 +140,20 @@ pub async fn run() {
                             println!("  --------------------");
                         }
                     }
-                },
+                }
                 Err(e) => eprintln!("Error receiving SMS: {}", e),
             }
-        },
+        }
         SmsCommand::Serve { port } => {
             // Call server start function here
             println!("Starting server on port {}", port);
             let addr = SocketAddr::from(([0, 0, 0, 0], port));
-            let listener = TcpListener::bind(&addr).await.expect("Failed to bind to port");
+            let listener = TcpListener::bind(&addr)
+                .await
+                .expect("Failed to bind to port");
             let (_tx, rx) = tokio::sync::oneshot::channel(); // Create a channel
             crate::server::start_server(listener, args.modem_url, rx).await;
-        },
+        }
     }
 }
 
@@ -138,61 +164,116 @@ mod tests {
 
     #[test]
     fn test_args_parsing_send_short_flags() {
-        let args = Args::try_parse_from(&["smser", "--modem-url", "http://test.com", "send", "-t", "1234567890", "-m", "Hello, world!"])
-            .expect("Failed to parse arguments");
+        let args = Args::try_parse_from(&[
+            "smser",
+            "--modem-url",
+            "http://test.com",
+            "send",
+            "-t",
+            "1234567890",
+            "-m",
+            "Hello, world!",
+        ])
+        .expect("Failed to parse arguments");
         assert_eq!(args.modem_url, "http://test.com");
         match args.command {
-            SmsCommand::Send { to, message, dry_run } => {
+            SmsCommand::Send {
+                to,
+                message,
+                dry_run,
+            } => {
                 assert_eq!(to, "1234567890");
                 assert_eq!(message, "Hello, world!");
                 assert_eq!(dry_run, false);
-            },
+            }
             _ => panic!("Expected Send command"),
         }
     }
 
     #[test]
     fn test_args_parsing_send_long_flags() {
-        let args = Args::try_parse_from(&["smser", "--modem-url", "http://test.com", "send", "--to", "1234567890", "--message", "Hello, world!", "--dry-run"])
-            .expect("Failed to parse arguments");
+        let args = Args::try_parse_from(&[
+            "smser",
+            "--modem-url",
+            "http://test.com",
+            "send",
+            "--to",
+            "1234567890",
+            "--message",
+            "Hello, world!",
+            "--dry-run",
+        ])
+        .expect("Failed to parse arguments");
         assert_eq!(args.modem_url, "http://test.com");
         match args.command {
-            SmsCommand::Send { to, message, dry_run } => {
+            SmsCommand::Send {
+                to,
+                message,
+                dry_run,
+            } => {
                 assert_eq!(to, "1234567890");
                 assert_eq!(message, "Hello, world!");
                 assert_eq!(dry_run, true);
-            },
+            }
             _ => panic!("Expected Send command"),
         }
     }
 
     #[test]
     fn test_args_parsing_receive() {
-        let args = Args::try_parse_from(&["smser", "--modem-url", "http://test.com", "receive", "--count", "50", "--ascending", "--unread-preferred", "--box-type", "local-sent", "--sort-by", "phone", "--json"])
-            .expect("Failed to parse arguments");
+        let args = Args::try_parse_from(&[
+            "smser",
+            "--modem-url",
+            "http://test.com",
+            "receive",
+            "--count",
+            "50",
+            "--ascending",
+            "--unread-preferred",
+            "--box-type",
+            "local-sent",
+            "--sort-by",
+            "phone",
+            "--json",
+        ])
+        .expect("Failed to parse arguments");
         assert_eq!(args.modem_url, "http://test.com");
         match args.command {
-            SmsCommand::Receive { count, ascending, unread_preferred, box_type, sort_by, json } => {
+            SmsCommand::Receive {
+                count,
+                ascending,
+                unread_preferred,
+                box_type,
+                sort_by,
+                json,
+            } => {
                 assert_eq!(count, 50);
                 assert_eq!(ascending, true);
                 assert_eq!(unread_preferred, true);
                 assert_eq!(box_type, BoxType::LocalSent);
                 assert_eq!(sort_by, SortType::Phone);
                 assert_eq!(json, true);
-            },
+            }
             _ => panic!("Expected Receive command"),
         }
     }
 
     #[test]
     fn test_args_parsing_serve() {
-        let args = Args::try_parse_from(&["smser", "--modem-url", "http://test.com", "serve", "--port", "9000"])
-            .expect("Failed to parse arguments");
+        let args = Args::try_parse_from(&[
+            "smser",
+            "--modem-url",
+            "http://test.com",
+            "serve",
+            "--port",
+            "9000",
+        ])
+        .expect("Failed to parse arguments");
         assert_eq!(args.modem_url, "http://test.com");
         match args.command {
             SmsCommand::Serve { port } => {
                 assert_eq!(port, 9000);
-            },
+            }
             _ => panic!("Expected Serve command"),
         }
     }
@@ -208,19 +289,45 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_sms_dry_run() {
-        let result = modem::send_sms("http://nonexistent.com", "dummy_session_id", "dummy_token", "+1234567890", "Test message", true).await;
+        let result = modem::send_sms(
+            "http://nonexistent.com",
+            "dummy_session_id",
+            "dummy_token",
+            "+1234567890",
+            "Test message",
+            true,
+        )
+        .await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn test_send_sms_error() {
-        let result = modem::send_sms("http://nonexistent.com", "dummy_session_id", "dummy_token", "+1234567890", "Test message", false).await;
+        let result = modem::send_sms(
+            "http://nonexistent.com",
+            "dummy_session_id",
+            "dummy_token",
+            "+1234567890",
+            "Test message",
+            false,
+        )
+        .await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_get_sms_list_error() {
-        let result = modem::get_sms_list("http://nonexistent.com", "dummy_session_id", "dummy_token", BoxType::LocalInbox, SortType::Date, 20, false, false).await;
+        let result = modem::get_sms_list(
+            "http://nonexistent.com",
+            "dummy_session_id",
+            "dummy_token",
+            BoxType::LocalInbox,
+            SortType::Date,
+            20,
+            false,
+            false,
+        )
+        .await;
         assert!(result.is_err());
     }
 }
