@@ -7,6 +7,10 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
+use tower_http::trace::TraceLayer;
+use crate::metrics::RateLimiter;
+use metrics::counter;
+use metrics_exporter_prometheus::PrometheusHandle;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SendSmsRequest {
@@ -17,6 +21,8 @@ pub struct SendSmsRequest {
 #[derive(Clone)]
 struct AppState {
     modem_url: String,
+    rate_limiter: RateLimiter,
+    prometheus_handle: PrometheusHandle,
 }
 
 use tokio::sync::oneshot; // New import
@@ -25,15 +31,21 @@ pub async fn start_server(
     listener: TcpListener,
     modem_url: String,
     shutdown_signal: oneshot::Receiver<()>,
+    handle: PrometheusHandle,
+    rate_limiter: RateLimiter,
 ) {
     let app_state = AppState {
         modem_url: modem_url.clone(),
+        rate_limiter,
+        prometheus_handle: handle,
     };
 
     let app = Router::new()
         .route("/", get(handler))
         .route("/send-sms", post(send_sms_handler))
         .route("/get-sms", get(get_sms_handler))
+        .route("/metrics", get(metrics_handler))
+        .layer(TraceLayer::new_for_http())
         .with_state(app_state); // Pass state to the router
 
     // run it
@@ -52,10 +64,23 @@ async fn handler() -> String {
     "Hello, Axum!".to_string()
 }
 
+async fn metrics_handler(State(state): State<AppState>) -> String {
+    state.prometheus_handle.render()
+}
+
 async fn send_sms_handler(
     State(state): State<AppState>,
     Json(payload): Json<SendSmsRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // Check rate limit
+    if let Err(e) = state.rate_limiter.check_and_increment() {
+        eprintln!("Rate limit exceeded: {}", e);
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            format!("Rate limit exceeded: {}", e),
+        ));
+    }
+
     let (session_id, token) = match modem::get_session_info(&state.modem_url).await {
         Ok((s, t)) => (s, t),
         Err(e) => {
@@ -77,9 +102,12 @@ async fn send_sms_handler(
     )
     .await
     {
-        Ok(_) => Ok(Json(
-            serde_json::json!({"status": "success", "message": "SMS sent successfully!"}),
-        )),
+        Ok(_) => {
+            counter!("smser_sms_sent_total").increment(1);
+            Ok(Json(
+                serde_json::json!({"status": "success", "message": "SMS sent successfully!"}),
+            ))
+        }
         Err(e) => {
             eprintln!("Error sending SMS: {}", e);
             let status = match e {
@@ -169,6 +197,7 @@ async fn get_sms_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metrics::setup_metrics;
     use axum::http::StatusCode;
     use reqwest::Client;
     use std::time::Duration; // For StatusCode in tests
@@ -183,7 +212,9 @@ mod tests {
         let (tx, rx) = tokio::sync::oneshot::channel(); // New
         // Spawn the server in a background task
         let server_handle = tokio::spawn(async move {
-            start_server(listener, modem_url, rx).await; // Pass listener
+            let handle = setup_metrics();
+            let rate_limiter = RateLimiter::new(100, 1000);
+            start_server(listener, modem_url, rx, handle, rate_limiter).await; // Pass listener
         });
 
         // Give the server a moment to start
@@ -206,6 +237,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_metrics_endpoint() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let modem_url = "http://localhost:8080".to_string();
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let server_handle = tokio::spawn(async move {
+            let handle = setup_metrics();
+            crate::metrics::update_limits_metrics(100, 1000);
+            let rate_limiter = RateLimiter::new(100, 1000);
+            start_server(listener, modem_url, rx, handle, rate_limiter).await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let client = Client::new();
+        let response = client
+            .get(format!("http://127.0.0.1:{}/metrics", port))
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        assert!(response.status().is_success());
+        let body = response.text().await.expect("Failed to get response body");
+        assert!(body.contains("smser_hourly_limit 100"));
+        assert!(body.contains("smser_daily_limit 1000"));
+
+        tx.send(()).unwrap();
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_get_sms_endpoint_error() {
         // Find an available port for testing
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -215,7 +278,9 @@ mod tests {
         let (tx, rx) = tokio::sync::oneshot::channel(); // New
         // Spawn the server in a background task
         let server_handle = tokio::spawn(async move {
-            start_server(listener, modem_url, rx).await; // Pass listener
+            let handle = setup_metrics();
+            let rate_limiter = RateLimiter::new(100, 1000);
+            start_server(listener, modem_url, rx, handle, rate_limiter).await; // Pass listener
         });
 
         // Give the server a moment to start

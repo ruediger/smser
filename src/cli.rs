@@ -3,6 +3,8 @@ use clap::Parser;
 use serde_json;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use crate::metrics::{RateLimiter, setup_metrics, update_limits_metrics};
 
 /// Simple program to send SMS via a Huawei E3372 modem
 #[derive(Parser, Debug)]
@@ -149,14 +151,28 @@ pub async fn run() {
             }
         }
         SmsCommand::Serve { port } => {
+            tracing_subscriber::registry()
+                .with(tracing_subscriber::EnvFilter::new(
+                    std::env::var("RUST_LOG").unwrap_or_else(|_| "smser=debug,tower_http=debug".into()),
+                ))
+                .with(tracing_subscriber::fmt::layer())
+                .init();
+
             // Call server start function here
             println!("Starting server on port {}", port);
+
+            let handle = setup_metrics();
+            let hourly_limit = 100;
+            let daily_limit = 1000;
+            update_limits_metrics(hourly_limit, daily_limit);
+            let rate_limiter = RateLimiter::new(hourly_limit, daily_limit);
+
             let addr = SocketAddr::from(([0, 0, 0, 0], port));
             let listener = TcpListener::bind(&addr)
                 .await
                 .expect("Failed to bind to port");
             let (_tx, rx) = tokio::sync::oneshot::channel(); // Create a channel
-            crate::server::start_server(listener, args.modem_url, rx).await;
+            crate::server::start_server(listener, args.modem_url, rx, handle, rate_limiter).await;
         }
     }
 }
