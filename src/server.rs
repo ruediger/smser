@@ -9,10 +9,11 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
 use crate::metrics::RateLimiter;
-use metrics::counter;
+use metrics::{counter, gauge};
 use metrics_exporter_prometheus::PrometheusHandle;
 use axum::response::Html;
 use tracing::{info, error};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use crate::alertmanager::{self, AlertManagerWebhook};
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -27,6 +28,7 @@ struct AppState {
     rate_limiter: RateLimiter,
     prometheus_handle: PrometheusHandle,
     alert_phone_number: Option<String>,
+    start_time: Instant,
 }
 
 use tokio::sync::oneshot; // New import
@@ -39,11 +41,21 @@ pub async fn start_server(
     rate_limiter: RateLimiter,
     alert_phone_number: Option<String>,
 ) {
+    let start_time = Instant::now();
+    let start_timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+
+    // Set the start time metric
+    gauge!("smser_start_time_seconds").set(start_timestamp);
+
     let app_state = AppState {
         modem_url: modem_url.clone(),
         rate_limiter,
         prometheus_handle: handle,
         alert_phone_number,
+        start_time,
     };
 
     let app = Router::new()
@@ -89,6 +101,9 @@ async fn metrics_handler(State(state): State<AppState>) -> String {
 async fn status_handler(State(state): State<AppState>) -> Html<String> {
     counter!("smser_http_requests_total", "endpoint" => "/status").increment(1);
     let status = state.rate_limiter.get_status();
+    let uptime = state.start_time.elapsed();
+    let uptime_str = format_uptime(uptime);
+
     let html = format!(
         r#"<!DOCTYPE html>
 <html>
@@ -107,6 +122,7 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
     <div class="card">
         <h2>Configuration</h2>
         <div class="stat"><span class="label">Modem URL:</span> {}</div>
+        <div class="stat"><span class="label">Uptime:</span> {}</div>
     </div>
     <div class="card">
         <h2>Rate Limits</h2>
@@ -116,10 +132,29 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
 </body>
 </html>"#,
         state.modem_url,
+        uptime_str,
         status.hourly_usage, status.hourly_limit,
         status.daily_usage, status.daily_limit
     );
     Html(html)
+}
+
+fn format_uptime(duration: std::time::Duration) -> String {
+    let total_secs = duration.as_secs();
+    let days = total_secs / 86400;
+    let hours = (total_secs % 86400) / 3600;
+    let minutes = (total_secs % 3600) / 60;
+    let seconds = total_secs % 60;
+
+    if days > 0 {
+        format!("{}d {}h {}m {}s", days, hours, minutes, seconds)
+    } else if hours > 0 {
+        format!("{}h {}m {}s", hours, minutes, seconds)
+    } else if minutes > 0 {
+        format!("{}m {}s", minutes, seconds)
+    } else {
+        format!("{}s", seconds)
+    }
 }
 
 async fn send_sms_handler(
@@ -399,6 +434,7 @@ mod tests {
         assert!(body.contains("smser_daily_limit 1000"));
         assert!(body.contains("smser_http_requests_total"));
         assert!(body.contains("endpoint=\"/metrics\""));
+        assert!(body.contains("smser_start_time_seconds"));
 
         tx.send(()).unwrap();
         server_handle.await.unwrap();
