@@ -83,12 +83,15 @@ When running in server mode (`smser serve`), the following endpoints are availab
     *   Params: `count` (default 20), `box_type` (default LocalInbox).
 *   **`GET /metrics`**: Prometheus metrics endpoint.
 *   **`GET /status`**: HTML status dashboard.
+*   **`POST /alertmanager`**: Prometheus Alert Manager webhook handler.
+    *   Accepts standard Alert Manager JSON.
+    *   Formats and sends alerts as SMS to the number configured via `--alert-to`.
 
 #### Configuration & Logging
 
 *   **Logging**: Controlled via `RUST_LOG` environment variable.
     ```bash
-    RUST_LOG=info smser serve
+    RUST_LOG=info smser serve --alert-to +441234567890
     ```
 *   **Rate Limits**: Currently hardcoded to 100/hour and 1000/day.
 

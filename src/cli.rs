@@ -65,6 +65,10 @@ pub enum SmsCommand {
         /// The port to listen on
         #[arg(short, long, default_value_t = 8080)]
         port: u16,
+
+        /// The phone number to send alerts to
+        #[arg(long)]
+        alert_to: Option<String>,
     },
 }
 
@@ -150,31 +154,30 @@ pub async fn run() {
                 Err(e) => eprintln!("Error receiving SMS: {}", e),
             }
         }
-        SmsCommand::Serve { port } => {
-            tracing_subscriber::registry()
-                .with(tracing_subscriber::EnvFilter::new(
-                    std::env::var("RUST_LOG").unwrap_or_else(|_| "smser=debug,tower_http=debug".into()),
-                ))
-                .with(tracing_subscriber::fmt::layer())
-                .init();
+                SmsCommand::Serve { port, alert_to } => {
+                    tracing_subscriber::registry()
+                        .with(tracing_subscriber::EnvFilter::new(
+                            std::env::var("RUST_LOG").unwrap_or_else(|_| "smser=debug,tower_http=debug".into()),
+                        ))
+                        .with(tracing_subscriber::fmt::layer())
+                        .init();
 
-            // Call server start function here
-            println!("Starting server on port {}", port);
+                    // Call server start function here
+                    println!("Starting server on port {}", port);
 
-            let handle = setup_metrics();
-            let hourly_limit = 100;
-            let daily_limit = 1000;
-            update_limits_metrics(hourly_limit, daily_limit);
-            let rate_limiter = RateLimiter::new(hourly_limit, daily_limit);
+                    let handle = setup_metrics();
+                    let hourly_limit = 100;
+                    let daily_limit = 1000;
+                    update_limits_metrics(hourly_limit, daily_limit);
+                    let rate_limiter = RateLimiter::new(hourly_limit, daily_limit);
 
-            let addr = SocketAddr::from(([0, 0, 0, 0], port));
-            let listener = TcpListener::bind(&addr)
-                .await
-                .expect("Failed to bind to port");
-            let (_tx, rx) = tokio::sync::oneshot::channel(); // Create a channel
-            crate::server::start_server(listener, args.modem_url, rx, handle, rate_limiter).await;
-        }
-    }
+                    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+                    let listener = TcpListener::bind(&addr)
+                        .await
+                        .expect("Failed to bind to port");
+                    let (_tx, rx) = tokio::sync::oneshot::channel(); // Create a channel
+                    crate::server::start_server(listener, args.modem_url, rx, handle, rate_limiter, alert_to).await;
+                }    }
 }
 
 #[cfg(test)]
@@ -291,8 +294,9 @@ mod tests {
         .expect("Failed to parse arguments");
         assert_eq!(args.modem_url, "http://test.com");
         match args.command {
-            SmsCommand::Serve { port } => {
+            SmsCommand::Serve { port, alert_to } => {
                 assert_eq!(port, 9000);
+                assert_eq!(alert_to, None);
             }
             _ => panic!("Expected Serve command"),
         }

@@ -13,6 +13,7 @@ use metrics::counter;
 use metrics_exporter_prometheus::PrometheusHandle;
 use axum::response::Html;
 use tracing::{info, error};
+use crate::alertmanager::{self, AlertManagerWebhook};
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SendSmsRequest {
@@ -25,6 +26,7 @@ struct AppState {
     modem_url: String,
     rate_limiter: RateLimiter,
     prometheus_handle: PrometheusHandle,
+    alert_phone_number: Option<String>,
 }
 
 use tokio::sync::oneshot; // New import
@@ -35,11 +37,13 @@ pub async fn start_server(
     shutdown_signal: oneshot::Receiver<()>,
     handle: PrometheusHandle,
     rate_limiter: RateLimiter,
+    alert_phone_number: Option<String>,
 ) {
     let app_state = AppState {
         modem_url: modem_url.clone(),
         rate_limiter,
         prometheus_handle: handle,
+        alert_phone_number,
     };
 
     let app = Router::new()
@@ -48,6 +52,7 @@ pub async fn start_server(
         .route("/get-sms", get(get_sms_handler))
         .route("/metrics", get(metrics_handler))
         .route("/status", get(status_handler))
+        .route("/alertmanager", post(alertmanager_handler))
         .layer(TraceLayer::new_for_http())
         .with_state(app_state); // Pass state to the router
 
@@ -178,6 +183,77 @@ async fn send_sms_handler(
     }
 }
 
+async fn alertmanager_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<AlertManagerWebhook>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    counter!("smser_http_requests_total", "endpoint" => "/alertmanager").increment(1);
+
+    info!("Received alert from Alert Manager: status={}", payload.status);
+
+    let to = match &state.alert_phone_number {
+        Some(phone) => phone,
+        None => {
+            error!("Alert Manager webhook received but no alert_phone_number configured");
+            return Err((StatusCode::BAD_REQUEST, "Alert phone number not configured".to_string()));
+        }
+    };
+
+    let message = alertmanager::format_alert_message(&payload);
+
+    // Check rate limit
+    if let Err(e) = state.rate_limiter.check_and_increment() {
+        error!("Rate limit exceeded for alert SMS: {}", e);
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            format!("Rate limit exceeded: {}", e),
+        ));
+    }
+
+    let (session_id, token) = match modem::get_session_info(&state.modem_url).await {
+        Ok((s, t)) => (s, t),
+        Err(e) => {
+            error!("Error getting session info for alert SMS: {}", e);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get session info: {}", e),
+            ));
+        }
+    };
+
+    match modem::send_sms(
+        &state.modem_url,
+        &session_id,
+        &token,
+        to,
+        &message,
+        false,
+    )
+    .await
+    {
+        Ok(_) => {
+            info!("Alert SMS sent successfully to {}", to);
+            counter!("smser_sms_sent_total").increment(1);
+            let country_code = extract_country_code(to);
+            counter!("smser_sms_country_total", "country_code" => country_code).increment(1);
+            Ok(Json(
+                serde_json::json!({"status": "success", "message": "Alert SMS sent successfully!"}),
+            ))
+        }
+        Err(e) => {
+            error!("Error sending alert SMS: {}", e);
+            let status = match e {
+                ModemError::ModemError {
+                    code: _,
+                    message: _,
+                } => StatusCode::BAD_REQUEST,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            Err((status, format!("Failed to send alert SMS: {}", e)))
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct GetSmsRequest {
     #[serde(default = "default_count")]
@@ -272,7 +348,7 @@ mod tests {
         let server_handle = tokio::spawn(async move {
             let handle = setup_metrics();
             let rate_limiter = RateLimiter::new(100, 1000);
-            start_server(listener, modem_url, rx, handle, rate_limiter).await; // Pass listener
+            start_server(listener, modem_url, rx, handle, rate_limiter, None).await; // Pass listener // Pass listener
         });
 
         // Give the server a moment to start
@@ -305,7 +381,7 @@ mod tests {
             let handle = setup_metrics();
             crate::metrics::update_limits_metrics(100, 1000);
             let rate_limiter = RateLimiter::new(100, 1000);
-            start_server(listener, modem_url, rx, handle, rate_limiter).await;
+            start_server(listener, modem_url, rx, handle, rate_limiter, None).await; // Pass listener
         });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -338,7 +414,7 @@ mod tests {
         let server_handle = tokio::spawn(async move {
             let handle = setup_metrics();
             let rate_limiter = RateLimiter::new(100, 1000);
-            start_server(listener, modem_url, rx, handle, rate_limiter).await;
+            start_server(listener, modem_url, rx, handle, rate_limiter, None).await; // Pass listener
         });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -361,6 +437,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_alertmanager_endpoint() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let modem_url = "http://localhost:8080".to_string();
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let server_handle = tokio::spawn(async move {
+            let handle = setup_metrics();
+            let rate_limiter = RateLimiter::new(100, 1000);
+            start_server(listener, modem_url, rx, handle, rate_limiter, Some("+441234567890".to_string())).await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let json = r#"{
+  "version": "4",
+  "groupKey": "{}:{alertname=\"TestAlert\"}",
+  "truncatedAlerts": 0,
+  "status": "firing",
+  "receiver": "webhook",
+  "groupLabels": {},
+  "commonLabels": {
+    "alertname": "TestAlert",
+    "severity": "critical"
+  },
+  "commonAnnotations": {
+    "summary": "Something is broken"
+  },
+  "externalURL": "http://localhost:9093",
+  "alerts": []
+}"#;
+
+        let client = Client::new();
+        let response = client
+            .post(format!("http://127.0.0.1:{}/alertmanager", port))
+            .header("Content-Type", "application/json")
+            .body(json)
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        // It will fail because modem is not there, but it should reach the modem call
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response.text().await.expect("Failed to get response body");
+        assert!(body.contains("Failed to get session info"));
+
+        tx.send(()).unwrap();
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_get_sms_endpoint_error() {
         // Find an available port for testing
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -372,7 +499,7 @@ mod tests {
         let server_handle = tokio::spawn(async move {
             let handle = setup_metrics();
             let rate_limiter = RateLimiter::new(100, 1000);
-            start_server(listener, modem_url, rx, handle, rate_limiter).await; // Pass listener
+            start_server(listener, modem_url, rx, handle, rate_limiter, None).await; // Pass listener // Pass listener
         });
 
         // Give the server a moment to start
