@@ -63,14 +63,25 @@ pub async fn start_server(
 }
 
 async fn handler() -> String {
+    counter!("smser_http_requests_total", "endpoint" => "/").increment(1);
     "Hello, Axum!".to_string()
 }
 
+fn extract_country_code(phone: &str) -> String {
+    if phone.starts_with('+') {
+        phone.chars().take(4).collect()
+    } else {
+        "unknown".to_string()
+    }
+}
+
 async fn metrics_handler(State(state): State<AppState>) -> String {
+    counter!("smser_http_requests_total", "endpoint" => "/metrics").increment(1);
     state.prometheus_handle.render()
 }
 
 async fn status_handler(State(state): State<AppState>) -> Html<String> {
+    counter!("smser_http_requests_total", "endpoint" => "/status").increment(1);
     let status = state.rate_limiter.get_status();
     let html = format!(
         r#"<!DOCTYPE html>
@@ -109,6 +120,8 @@ async fn send_sms_handler(
     State(state): State<AppState>,
     Json(payload): Json<SendSmsRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    counter!("smser_http_requests_total", "endpoint" => "/send-sms").increment(1);
+
     // Check rate limit
     if let Err(e) = state.rate_limiter.check_and_increment() {
         eprintln!("Rate limit exceeded: {}", e);
@@ -141,6 +154,8 @@ async fn send_sms_handler(
     {
         Ok(_) => {
             counter!("smser_sms_sent_total").increment(1);
+            let country_code = extract_country_code(&payload.to);
+            counter!("smser_sms_country_total", "country_code" => country_code).increment(1);
             Ok(Json(
                 serde_json::json!({"status": "success", "message": "SMS sent successfully!"}),
             ))
@@ -187,6 +202,8 @@ async fn get_sms_handler(
     State(state): State<AppState>,
     Query(params): Query<GetSmsRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    counter!("smser_http_requests_total", "endpoint" => "/get-sms").increment(1);
+
     let (session_id, token) = match modem::get_session_info(&state.modem_url).await {
         Ok((s, t)) => (s, t),
         Err(e) => {
@@ -300,6 +317,8 @@ mod tests {
         let body = response.text().await.expect("Failed to get response body");
         assert!(body.contains("smser_hourly_limit 100"));
         assert!(body.contains("smser_daily_limit 1000"));
+        assert!(body.contains("smser_http_requests_total"));
+        assert!(body.contains("endpoint=\"/metrics\""));
 
         tx.send(()).unwrap();
         server_handle.await.unwrap();

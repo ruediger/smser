@@ -104,6 +104,8 @@ pub fn setup_metrics() -> PrometheusHandle {
                 .expect("failed to install Prometheus recorder");
 
             describe_counter!("smser_sms_sent_total", Unit::Count, "Total number of SMS sent");
+            describe_counter!("smser_http_requests_total", Unit::Count, "Total number of HTTP requests");
+            describe_counter!("smser_sms_country_total", Unit::Count, "Total number of SMS sent by country code");
             describe_gauge!("smser_hourly_limit", Unit::Count, "Hourly SMS limit");
             describe_gauge!("smser_daily_limit", Unit::Count, "Daily SMS limit");
             describe_gauge!("smser_hourly_usage", Unit::Count, "Current hourly SMS usage");
