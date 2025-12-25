@@ -1,9 +1,13 @@
+#[cfg(feature = "server")]
 use crate::metrics::{RateLimiter, setup_metrics, update_limits_metrics};
 use crate::modem::{self, BoxType, SortType};
 use clap::Parser;
 use serde_json;
+#[cfg(feature = "server")]
 use std::net::SocketAddr;
+#[cfg(feature = "server")]
 use tokio::net::TcpListener;
+#[cfg(feature = "server")]
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Simple program to send SMS via a Huawei E3372 modem
@@ -61,12 +65,14 @@ pub enum SmsCommand {
         json: bool,
     },
     /// Start the web server
+    #[cfg(feature = "server")]
     Serve {
         /// The port to listen on
         #[arg(short, long, default_value_t = 8080)]
         port: u16,
 
         /// The phone number to send alerts to
+        #[cfg(feature = "alertmanager")]
         #[arg(long)]
         alert_to: Option<String>,
 
@@ -155,8 +161,10 @@ pub async fn run() {
                 Err(e) => eprintln!("Error receiving SMS: {}", e),
             }
         }
+        #[cfg(feature = "server")]
         SmsCommand::Serve {
             port,
+            #[cfg(feature = "alertmanager")]
             alert_to,
             hourly_limit,
             daily_limit,
@@ -187,6 +195,7 @@ pub async fn run() {
                 rx,
                 handle,
                 rate_limiter,
+                #[cfg(feature = "alertmanager")]
                 alert_to,
             )
             .await;
@@ -201,7 +210,7 @@ mod tests {
 
     #[test]
     fn test_args_parsing_send_short_flags() {
-        let args = Args::try_parse_from(&[
+        let args = Args::try_parse_from([
             "smser",
             "--modem-url",
             "http://test.com",
@@ -221,7 +230,7 @@ mod tests {
             } => {
                 assert_eq!(to, "1234567890");
                 assert_eq!(message, "Hello, world!");
-                assert_eq!(dry_run, false);
+                assert!(!dry_run);
             }
             _ => panic!("Expected Send command"),
         }
@@ -229,7 +238,7 @@ mod tests {
 
     #[test]
     fn test_args_parsing_send_long_flags() {
-        let args = Args::try_parse_from(&[
+        let args = Args::try_parse_from([
             "smser",
             "--modem-url",
             "http://test.com",
@@ -250,7 +259,7 @@ mod tests {
             } => {
                 assert_eq!(to, "1234567890");
                 assert_eq!(message, "Hello, world!");
-                assert_eq!(dry_run, true);
+                assert!(dry_run);
             }
             _ => panic!("Expected Send command"),
         }
@@ -258,7 +267,7 @@ mod tests {
 
     #[test]
     fn test_args_parsing_receive() {
-        let args = Args::try_parse_from(&[
+        let args = Args::try_parse_from([
             "smser",
             "--modem-url",
             "http://test.com",
@@ -285,19 +294,20 @@ mod tests {
                 json,
             } => {
                 assert_eq!(count, 50);
-                assert_eq!(ascending, true);
-                assert_eq!(unread_preferred, true);
+                assert!(ascending);
+                assert!(unread_preferred);
                 assert_eq!(box_type, BoxType::LocalSent);
                 assert_eq!(sort_by, SortType::Phone);
-                assert_eq!(json, true);
+                assert!(json);
             }
             _ => panic!("Expected Receive command"),
         }
     }
 
     #[test]
+    #[cfg(feature = "server")]
     fn test_args_parsing_serve() {
-        let args = Args::try_parse_from(&[
+        let args = Args::try_parse_from([
             "smser",
             "--modem-url",
             "http://test.com",
@@ -314,11 +324,13 @@ mod tests {
         match args.command {
             SmsCommand::Serve {
                 port,
+                #[cfg(feature = "alertmanager")]
                 alert_to,
                 hourly_limit,
                 daily_limit,
             } => {
                 assert_eq!(port, 9000);
+                #[cfg(feature = "alertmanager")]
                 assert_eq!(alert_to, None);
                 assert_eq!(hourly_limit, 50);
                 assert_eq!(daily_limit, 500);

@@ -1,3 +1,4 @@
+#[cfg(feature = "alertmanager")]
 use crate::alertmanager::{self, AlertManagerWebhook};
 use crate::metrics::RateLimiter;
 use crate::modem::{self, BoxType, Error as ModemError, SortType}; // Import modem module and alias Error
@@ -27,6 +28,7 @@ struct AppState {
     modem_url: String,
     rate_limiter: RateLimiter,
     prometheus_handle: PrometheusHandle,
+    #[cfg(feature = "alertmanager")]
     alert_phone_number: Option<String>,
     start_time: Instant,
 }
@@ -39,7 +41,7 @@ pub async fn start_server(
     shutdown_signal: oneshot::Receiver<()>,
     handle: PrometheusHandle,
     rate_limiter: RateLimiter,
-    alert_phone_number: Option<String>,
+    #[cfg(feature = "alertmanager")] alert_phone_number: Option<String>,
 ) {
     let start_time = Instant::now();
     let start_timestamp = SystemTime::now()
@@ -54,6 +56,7 @@ pub async fn start_server(
         modem_url: modem_url.clone(),
         rate_limiter,
         prometheus_handle: handle,
+        #[cfg(feature = "alertmanager")]
         alert_phone_number,
         start_time,
     };
@@ -63,10 +66,12 @@ pub async fn start_server(
         .route("/send-sms", post(send_sms_handler))
         .route("/get-sms", get(get_sms_handler))
         .route("/metrics", get(metrics_handler))
-        .route("/status", get(status_handler))
-        .route("/alertmanager", post(alertmanager_handler))
-        .layer(TraceLayer::new_for_http())
-        .with_state(app_state); // Pass state to the router
+        .route("/status", get(status_handler));
+
+    #[cfg(feature = "alertmanager")]
+    let app = app.route("/alertmanager", post(alertmanager_handler));
+
+    let app = app.layer(TraceLayer::new_for_http()).with_state(app_state); // Pass state to the router
 
     // run it
     let addr = listener.local_addr().unwrap();
@@ -220,6 +225,7 @@ async fn send_sms_handler(
     }
 }
 
+#[cfg(feature = "alertmanager")]
 async fn alertmanager_handler(
     State(state): State<AppState>,
     Json(payload): Json<AlertManagerWebhook>,
@@ -375,7 +381,16 @@ mod tests {
         let server_handle = tokio::spawn(async move {
             let handle = setup_metrics();
             let rate_limiter = RateLimiter::new(100, 1000);
-            start_server(listener, modem_url, rx, handle, rate_limiter, None).await; // Pass listener // Pass listener
+            start_server(
+                listener,
+                modem_url,
+                rx,
+                handle,
+                rate_limiter,
+                #[cfg(feature = "alertmanager")]
+                None,
+            )
+            .await; // Pass listener // Pass listener // Pass listener // Pass listener
         });
 
         // Give the server a moment to start
@@ -408,7 +423,16 @@ mod tests {
             let handle = setup_metrics();
             crate::metrics::update_limits_metrics(100, 1000);
             let rate_limiter = RateLimiter::new(100, 1000);
-            start_server(listener, modem_url, rx, handle, rate_limiter, None).await; // Pass listener
+            start_server(
+                listener,
+                modem_url,
+                rx,
+                handle,
+                rate_limiter,
+                #[cfg(feature = "alertmanager")]
+                None,
+            )
+            .await; // Pass listener // Pass listener // Pass listener
         });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -442,7 +466,16 @@ mod tests {
         let server_handle = tokio::spawn(async move {
             let handle = setup_metrics();
             let rate_limiter = RateLimiter::new(100, 1000);
-            start_server(listener, modem_url, rx, handle, rate_limiter, None).await; // Pass listener
+            start_server(
+                listener,
+                modem_url,
+                rx,
+                handle,
+                rate_limiter,
+                #[cfg(feature = "alertmanager")]
+                None,
+            )
+            .await; // Pass listener // Pass listener // Pass listener
         });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -465,6 +498,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "alertmanager")]
     async fn test_alertmanager_endpoint() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -535,7 +569,16 @@ mod tests {
         let server_handle = tokio::spawn(async move {
             let handle = setup_metrics();
             let rate_limiter = RateLimiter::new(100, 1000);
-            start_server(listener, modem_url, rx, handle, rate_limiter, None).await; // Pass listener // Pass listener
+            start_server(
+                listener,
+                modem_url,
+                rx,
+                handle,
+                rate_limiter,
+                #[cfg(feature = "alertmanager")]
+                None,
+            )
+            .await; // Pass listener // Pass listener // Pass listener // Pass listener
         });
 
         // Give the server a moment to start
