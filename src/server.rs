@@ -12,6 +12,7 @@ use crate::metrics::RateLimiter;
 use metrics::counter;
 use metrics_exporter_prometheus::PrometheusHandle;
 use axum::response::Html;
+use tracing::{info, error};
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SendSmsRequest {
@@ -122,9 +123,11 @@ async fn send_sms_handler(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     counter!("smser_http_requests_total", "endpoint" => "/send-sms").increment(1);
 
+    info!("Received request to send SMS to {}", payload.to);
+
     // Check rate limit
     if let Err(e) = state.rate_limiter.check_and_increment() {
-        eprintln!("Rate limit exceeded: {}", e);
+        error!("Rate limit exceeded: {}", e);
         return Err((
             StatusCode::TOO_MANY_REQUESTS,
             format!("Rate limit exceeded: {}", e),
@@ -134,7 +137,7 @@ async fn send_sms_handler(
     let (session_id, token) = match modem::get_session_info(&state.modem_url).await {
         Ok((s, t)) => (s, t),
         Err(e) => {
-            eprintln!("Error getting session info: {}", e);
+            error!("Error getting session info: {}", e);
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to get session info: {}", e),
@@ -153,6 +156,7 @@ async fn send_sms_handler(
     .await
     {
         Ok(_) => {
+            info!("SMS sent successfully to {}", payload.to);
             counter!("smser_sms_sent_total").increment(1);
             let country_code = extract_country_code(&payload.to);
             counter!("smser_sms_country_total", "country_code" => country_code).increment(1);
@@ -161,7 +165,7 @@ async fn send_sms_handler(
             ))
         }
         Err(e) => {
-            eprintln!("Error sending SMS: {}", e);
+            error!("Error sending SMS: {}", e);
             let status = match e {
                 ModemError::ModemError {
                     code: _,
@@ -207,7 +211,7 @@ async fn get_sms_handler(
     let (session_id, token) = match modem::get_session_info(&state.modem_url).await {
         Ok((s, t)) => (s, t),
         Err(e) => {
-            eprintln!("Error getting session info: {}", e);
+            error!("Error getting session info: {}", e);
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to get session info: {}", e),
@@ -235,7 +239,7 @@ async fn get_sms_handler(
             serde_json::json!({"status": "success", "messages": response.messages.message}),
         )),
         Err(e) => {
-            eprintln!("Error receiving SMS: {}", e);
+            error!("Error receiving SMS: {}", e);
             let status = match e {
                 ModemError::ModemError {
                     code: _,
