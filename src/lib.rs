@@ -1,5 +1,5 @@
-pub mod modem;
-pub mod cli;
-pub mod server;
-pub mod metrics;
 pub mod alertmanager;
+pub mod cli;
+pub mod metrics;
+pub mod modem;
+pub mod server;

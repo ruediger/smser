@@ -91,9 +91,9 @@ When running in server mode (`smser serve`), the following endpoints are availab
 
 *   **Logging**: Controlled via `RUST_LOG` environment variable.
     ```bash
-    RUST_LOG=info smser serve --alert-to +441234567890
+    RUST_LOG=info smser serve --alert-to +441234567890 --hourly-limit 50 --daily-limit 500
     ```
-*   **Rate Limits**: Currently hardcoded to 100/hour and 1000/day.
+*   **Rate Limits**: Configurable via `--hourly-limit` (default 100) and `--daily-limit` (default 1000).
 
 ## Monitoring
 
@@ -105,4 +105,4 @@ The `/metrics` endpoint exports the following Prometheus metrics:
 
 ## License
 
-MIT
+MIT OR Apache-2.0

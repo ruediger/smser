@@ -40,9 +40,19 @@ pub fn format_alert_message(webhook: &AlertManagerWebhook) -> String {
     // Let's try to be concise.
 
     let status = webhook.status.to_uppercase();
-    let alert_name = webhook.common_labels.get("alertname").map(|s| s.as_str()).unwrap_or("Unknown Alert");
-    let severity = webhook.common_labels.get("severity").map(|s| s.as_str()).unwrap_or("unknown");
-    let summary = webhook.common_annotations.get("summary")
+    let alert_name = webhook
+        .common_labels
+        .get("alertname")
+        .map(|s| s.as_str())
+        .unwrap_or("Unknown Alert");
+    let severity = webhook
+        .common_labels
+        .get("severity")
+        .map(|s| s.as_str())
+        .unwrap_or("unknown");
+    let summary = webhook
+        .common_annotations
+        .get("summary")
         .or_else(|| webhook.common_annotations.get("description"))
         .or_else(|| webhook.common_annotations.get("message"))
         .map(|s| s.as_str())

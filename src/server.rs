@@ -1,20 +1,20 @@
+use crate::alertmanager::{self, AlertManagerWebhook};
+use crate::metrics::RateLimiter;
 use crate::modem::{self, BoxType, Error as ModemError, SortType}; // Import modem module and alias Error
 use axum::http::StatusCode; // For HTTP status codes
+use axum::response::Html;
 use axum::{
     Json, Router,
     extract::{Query, State},
     routing::{get, post},
 };
-use serde::{Deserialize, Serialize};
-use tokio::net::TcpListener;
-use tower_http::trace::TraceLayer;
-use crate::metrics::RateLimiter;
 use metrics::{counter, gauge};
 use metrics_exporter_prometheus::PrometheusHandle;
-use axum::response::Html;
-use tracing::{info, error};
+use serde::{Deserialize, Serialize};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use crate::alertmanager::{self, AlertManagerWebhook};
+use tokio::net::TcpListener;
+use tower_http::trace::TraceLayer;
+use tracing::{error, info};
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SendSmsRequest {
@@ -133,8 +133,10 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
 </html>"#,
         state.modem_url,
         uptime_str,
-        status.hourly_usage, status.hourly_limit,
-        status.daily_usage, status.daily_limit
+        status.hourly_usage,
+        status.hourly_limit,
+        status.daily_usage,
+        status.daily_limit
     );
     Html(html)
 }
@@ -224,13 +226,19 @@ async fn alertmanager_handler(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     counter!("smser_http_requests_total", "endpoint" => "/alertmanager").increment(1);
 
-    info!("Received alert from Alert Manager: status={}", payload.status);
+    info!(
+        "Received alert from Alert Manager: status={}",
+        payload.status
+    );
 
     let to = match &state.alert_phone_number {
         Some(phone) => phone,
         None => {
             error!("Alert Manager webhook received but no alert_phone_number configured");
-            return Err((StatusCode::BAD_REQUEST, "Alert phone number not configured".to_string()));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Alert phone number not configured".to_string(),
+            ));
         }
     };
 
@@ -256,16 +264,7 @@ async fn alertmanager_handler(
         }
     };
 
-    match modem::send_sms(
-        &state.modem_url,
-        &session_id,
-        &token,
-        to,
-        &message,
-        false,
-    )
-    .await
-    {
+    match modem::send_sms(&state.modem_url, &session_id, &token, to, &message, false).await {
         Ok(_) => {
             info!("Alert SMS sent successfully to {}", to);
             counter!("smser_sms_sent_total").increment(1);
@@ -338,14 +337,7 @@ async fn get_sms_handler(
         unread_preferred: params.unread_preferred,
     };
 
-    match modem::get_sms_list(
-        &state.modem_url,
-        &session_id,
-        &token,
-        sms_params,
-    )
-    .await
-    {
+    match modem::get_sms_list(&state.modem_url, &session_id, &token, sms_params).await {
         Ok(response) => Ok(Json(
             serde_json::json!({"status": "success", "messages": response.messages.message}),
         )),
@@ -482,7 +474,15 @@ mod tests {
         let server_handle = tokio::spawn(async move {
             let handle = setup_metrics();
             let rate_limiter = RateLimiter::new(100, 1000);
-            start_server(listener, modem_url, rx, handle, rate_limiter, Some("+441234567890".to_string())).await;
+            start_server(
+                listener,
+                modem_url,
+                rx,
+                handle,
+                rate_limiter,
+                Some("+441234567890".to_string()),
+            )
+            .await;
         });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
