@@ -109,15 +109,19 @@ pub async fn run() {
             println!("Session ID: {}", session_id);
             println!("Token: {}", token);
 
+            let params = modem::SmsListParams {
+                box_type,
+                sort_type: sort_by,
+                read_count: count,
+                ascending,
+                unread_preferred,
+            };
+
             match modem::get_sms_list(
                 &args.modem_url,
                 &session_id,
                 &token,
-                box_type,
-                sort_by,
-                count,
-                ascending,
-                unread_preferred,
+                params,
             )
             .await
             {
@@ -317,15 +321,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_sms_list_error() {
+        let params = modem::SmsListParams {
+            box_type: BoxType::LocalInbox,
+            sort_type: SortType::Date,
+            read_count: 20,
+            ascending: false,
+            unread_preferred: false,
+        };
         let result = modem::get_sms_list(
             "http://nonexistent.com",
             "dummy_session_id",
             "dummy_token",
-            BoxType::LocalInbox,
-            SortType::Date,
-            20,
-            false,
-            false,
+            params,
         )
         .await;
         assert!(result.is_err());

@@ -133,15 +133,19 @@ async fn get_sms_handler(
         }
     };
 
+    let sms_params = modem::SmsListParams {
+        box_type: params.box_type,
+        sort_type: params.sort_by,
+        read_count: params.count,
+        ascending: params.ascending,
+        unread_preferred: params.unread_preferred,
+    };
+
     match modem::get_sms_list(
         &state.modem_url,
         &session_id,
         &token,
-        params.box_type,
-        params.sort_by,
-        params.count,
-        params.ascending,
-        params.unread_preferred,
+        sms_params,
     )
     .await
     {

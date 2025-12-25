@@ -197,16 +197,21 @@ pub struct SmsListResponse {
     pub messages: SmsMessages,
 }
 
+/// Parameters for fetching the SMS list.
+pub struct SmsListParams {
+    pub box_type: BoxType,
+    pub sort_type: SortType,
+    pub read_count: u32,
+    pub ascending: bool,
+    pub unread_preferred: bool,
+}
+
 /// Fetches the SMS list from the modem.
 pub async fn get_sms_list(
     modem_url: &str,
     session_id: &str,
     token: &str,
-    box_type: BoxType,
-    sort_type: SortType,
-    read_count: u32,
-    ascending: bool,
-    unread_preferred: bool,
+    params: SmsListParams,
 ) -> Result<SmsListResponse, Error> {
     let client = HttpClient::builder()
         .timeout(std::time::Duration::new(10, 0)) // 10 seconds
@@ -215,11 +220,11 @@ pub async fn get_sms_list(
 
     let sms_list_request = SmsListRequest {
         page_index: 1,
-        read_count: read_count, // Fetching up to 20 messages for now
-        box_type,
-        sort_type,
-        ascending: if ascending { 1 } else { 0 },
-        unread_preferred: if unread_preferred { 1 } else { 0 },
+        read_count: params.read_count, // Fetching up to 20 messages for now
+        box_type: params.box_type,
+        sort_type: params.sort_type,
+        ascending: if params.ascending { 1 } else { 0 },
+        unread_preferred: if params.unread_preferred { 1 } else { 0 },
     };
 
     let xml_payload = to_string(&sms_list_request)?;
