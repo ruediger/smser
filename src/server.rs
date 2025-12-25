@@ -11,6 +11,7 @@ use tower_http::trace::TraceLayer;
 use crate::metrics::RateLimiter;
 use metrics::counter;
 use metrics_exporter_prometheus::PrometheusHandle;
+use axum::response::Html;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SendSmsRequest {
@@ -45,6 +46,7 @@ pub async fn start_server(
         .route("/send-sms", post(send_sms_handler))
         .route("/get-sms", get(get_sms_handler))
         .route("/metrics", get(metrics_handler))
+        .route("/status", get(status_handler))
         .layer(TraceLayer::new_for_http())
         .with_state(app_state); // Pass state to the router
 
@@ -66,6 +68,41 @@ async fn handler() -> String {
 
 async fn metrics_handler(State(state): State<AppState>) -> String {
     state.prometheus_handle.render()
+}
+
+async fn status_handler(State(state): State<AppState>) -> Html<String> {
+    let status = state.rate_limiter.get_status();
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html>
+<head>
+    <title>SMS Server Status</title>
+    <style>
+        body {{ font-family: sans-serif; margin: 2rem; }}
+        h1 {{ color: #333; }}
+        .card {{ border: 1px solid #ddd; padding: 1rem; border-radius: 4px; margin-bottom: 1rem; }}
+        .stat {{ margin: 0.5rem 0; }}
+        .label {{ font-weight: bold; }}
+    </style>
+</head>
+<body>
+    <h1>SMS Server Status</h1>
+    <div class="card">
+        <h2>Configuration</h2>
+        <div class="stat"><span class="label">Modem URL:</span> {}</div>
+    </div>
+    <div class="card">
+        <h2>Rate Limits</h2>
+        <div class="stat"><span class="label">Hourly Usage:</span> {} / {}</div>
+        <div class="stat"><span class="label">Daily Usage:</span> {} / {}</div>
+    </div>
+</body>
+</html>"#,
+        state.modem_url,
+        status.hourly_usage, status.hourly_limit,
+        status.daily_usage, status.daily_limit
+    );
+    Html(html)
 }
 
 async fn send_sms_handler(
@@ -263,6 +300,38 @@ mod tests {
         let body = response.text().await.expect("Failed to get response body");
         assert!(body.contains("smser_hourly_limit 100"));
         assert!(body.contains("smser_daily_limit 1000"));
+
+        tx.send(()).unwrap();
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_status_endpoint() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let modem_url = "http://localhost:8080".to_string();
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let server_handle = tokio::spawn(async move {
+            let handle = setup_metrics();
+            let rate_limiter = RateLimiter::new(100, 1000);
+            start_server(listener, modem_url, rx, handle, rate_limiter).await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let client = Client::new();
+        let response = client
+            .get(format!("http://127.0.0.1:{}/status", port))
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        assert!(response.status().is_success());
+        let body = response.text().await.expect("Failed to get response body");
+        assert!(body.contains("SMS Server Status"));
+        assert!(body.contains("Modem URL:</span> http://localhost:8080"));
+        assert!(body.contains("Hourly Usage:</span> 0 / 100"));
 
         tx.send(()).unwrap();
         server_handle.await.unwrap();

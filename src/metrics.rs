@@ -1,9 +1,18 @@
 use metrics::{describe_counter, describe_gauge, gauge, Unit};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use serde::Serialize;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 static PROMETHEUS_HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
+
+#[derive(Debug, Serialize)]
+pub struct RateLimitStatus {
+    pub hourly_usage: u32,
+    pub hourly_limit: u32,
+    pub daily_usage: u32,
+    pub daily_limit: u32,
+}
 
 #[derive(Clone, Debug)]
 pub struct RateLimiter {
@@ -18,6 +27,23 @@ struct RateLimitState {
     daily_count: u32,
     last_reset_hour: Instant,
     last_reset_day: Instant,
+}
+
+impl RateLimitState {
+    fn update(&mut self) {
+        let now = Instant::now();
+        // Check if hour has passed
+        if now.duration_since(self.last_reset_hour) >= Duration::from_secs(3600) {
+            self.hourly_count = 0;
+            self.last_reset_hour = now;
+        }
+
+        // Check if day has passed
+        if now.duration_since(self.last_reset_day) >= Duration::from_secs(86400) {
+            self.daily_count = 0;
+            self.last_reset_day = now;
+        }
+    }
 }
 
 impl RateLimiter {
@@ -36,19 +62,7 @@ impl RateLimiter {
 
     pub fn check_and_increment(&self) -> Result<(), String> {
         let mut state = self.state.lock().unwrap();
-        let now = Instant::now();
-
-        // Check if hour has passed
-        if now.duration_since(state.last_reset_hour) >= Duration::from_secs(3600) {
-            state.hourly_count = 0;
-            state.last_reset_hour = now;
-        }
-
-        // Check if day has passed
-        if now.duration_since(state.last_reset_day) >= Duration::from_secs(86400) {
-            state.daily_count = 0;
-            state.last_reset_day = now;
-        }
+        state.update();
 
         if state.hourly_count >= self.hourly_limit {
             return Err(format!("Hourly limit of {} reached", self.hourly_limit));
@@ -66,6 +80,18 @@ impl RateLimiter {
         gauge!("smser_daily_usage").set(state.daily_count as f64);
 
         Ok(())
+    }
+
+    pub fn get_status(&self) -> RateLimitStatus {
+        let mut state = self.state.lock().unwrap();
+        state.update();
+
+        RateLimitStatus {
+            hourly_usage: state.hourly_count,
+            hourly_limit: self.hourly_limit,
+            daily_usage: state.daily_count,
+            daily_limit: self.daily_limit,
+        }
     }
 }
 
