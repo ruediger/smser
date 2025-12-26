@@ -85,9 +85,147 @@ pub async fn start_server(
         .unwrap();
 }
 
-async fn handler() -> String {
+async fn handler() -> Html<String> {
     counter!("smser_http_requests_total", "endpoint" => "/").increment(1);
-    "Hello, Axum!".to_string()
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>smser - SMS Gateway</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8f9fa; }
+        .container { max-width: 800px; margin-top: 2rem; }
+        .msg-card { margin-bottom: 1rem; }
+        .date { font-size: 0.85rem; color: #6c757d; }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-dark mb-4">
+        <div class="container-fluid">
+            <span class="navbar-brand mb-0 h1">smser Gateway</span>
+            <div class="d-flex">
+                <a href="/status" class="btn btn-outline-light btn-sm me-2">Status</a>
+                <a href="/metrics" class="btn btn-outline-light btn-sm">Metrics</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="row">
+            <div class="col-md-12">
+                <div class="card shadow-sm mb-4">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="card-title mb-0">Send SMS</h5>
+                    </div>
+                    <div class="card-body">
+                        <form id="sendForm">
+                            <div class="mb-3">
+                                <label for="to" class="form-label">Destination Number</label>
+                                <input type="text" class="form-control" id="to" placeholder="+44..." required>
+                            </div>
+                            <div class="mb-3">
+                                <label for="message" class="form-label">Message</label>
+                                <textarea class="form-control" id="message" rows="3" required></textarea>
+                            </div>
+                            <button type="submit" class="btn btn-primary" id="sendBtn">Send Message</button>
+                        </form>
+                        <div id="sendAlert" class="mt-3 d-none alert"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-md-12">
+                <div class="card shadow-sm">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="card-title mb-0">Recent Messages</h5>
+                        <button class="btn btn-sm btn-secondary" onclick="fetchMessages()">Refresh</button>
+                    </div>
+                    <div class="card-body">
+                        <div id="messagesList">
+                            <div class="text-center p-4">Loading messages...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function fetchMessages() {
+            try {
+                const response = await fetch('/get-sms?count=10');
+                const data = await response.json();
+                const list = document.getElementById('messagesList');
+
+                if (data.status === 'success' && data.messages) {
+                    if (data.messages.length === 0) {
+                        list.innerHTML = '<div class="text-center p-4">No messages found.</div>';
+                        return;
+                    }
+
+                    list.innerHTML = data.messages.map(msg => `
+                        <div class="card msg-card border-0 border-bottom">
+                            <div class="card-body px-0">
+                                <div class="d-flex justify-content-between align-items-start">
+                                    <h6 class="mb-1">${msg.Phone}</h6>
+                                    <span class="date">${msg.Date}</span>
+                                </div>
+                                <p class="card-text mb-0">${msg.Content}</p>
+                            </div>
+                        </div>
+                    `).join('');
+                } else {
+                    list.innerHTML = `<div class="alert alert-danger">Error: ${data.message || 'Failed to load'}</div>`;
+                }
+            } catch (e) {
+                document.getElementById('messagesList').innerHTML = `<div class="alert alert-danger">Error connecting to server.</div>`;
+            }
+        }
+
+        document.getElementById('sendForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('sendBtn');
+            const alert = document.getElementById('sendAlert');
+            const to = document.getElementById('to').value;
+            const message = document.getElementById('message').value;
+
+            btn.disabled = true;
+            alert.className = 'mt-3 d-none alert';
+
+            try {
+                const response = await fetch('/send-sms', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ to, message })
+                });
+                const data = await response.json();
+
+                alert.className = `mt-3 alert alert-${data.status === 'success' ? 'success' : 'danger'}`;
+                alert.innerText = data.message || (data.status === 'success' ? 'Sent!' : 'Failed');
+                alert.classList.remove('d-none');
+
+                if (data.status === 'success') {
+                    document.getElementById('message').value = '';
+                }
+            } catch (e) {
+                alert.className = 'mt-3 alert alert-danger';
+                alert.innerText = 'Network error.';
+                alert.classList.remove('d-none');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
+        // Initial load
+        fetchMessages();
+    </script>
+</body>
+</html>"#;
+    Html(html.to_string())
 }
 
 fn extract_country_code(phone: &str) -> String {
@@ -407,7 +545,7 @@ mod tests {
         // Assert the response
         assert!(response.status().is_success());
         let body = response.text().await.expect("Failed to get response body");
-        assert_eq!(body, "Hello, Axum!");
+        assert!(body.contains("smser Gateway"));
         tx.send(()).unwrap(); // New, send shutdown signal
         server_handle.await.unwrap(); // Wait for server to shut down cleanly. // New
     }
