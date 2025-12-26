@@ -68,6 +68,12 @@ smser send --to +441234567890 --message "Hello from smser!"
 smser receive --count 5
 ```
 
+**Remote Mode (talk to another smser server):**
+```bash
+smser --remote-url http://smser-server:8080 receive --count 5
+smser --remote-url http://smser-server:8080 send --to +441234567890 --message "Hello!"
+```
+
 **Start the Server:**
 ```bash
 smser serve --port 8080

@@ -18,6 +18,10 @@ pub struct Args {
     #[arg(long, default_value = "http://192.168.8.1")]
     pub modem_url: String,
 
+    /// The URL of a remote smser server (e.g., "http://localhost:8080")
+    #[arg(long)]
+    pub remote_url: Option<String>,
+
     #[command(subcommand)]
     pub command: SmsCommand,
 }
@@ -95,20 +99,47 @@ pub async fn run() {
             message,
             dry_run,
         } => {
-            let (session_id, token) = match modem::get_session_info(&args.modem_url).await {
-                Ok((s, t)) => (s, t),
-                Err(e) => {
-                    eprintln!("Error getting session info: {}", e);
+            if let Some(remote_url) = args.remote_url {
+                if dry_run {
+                    println!("DRY RUN: Not sending message.");
                     return;
                 }
-            };
-            println!("Session ID: {}", session_id);
-            println!("Token: {}", token);
+                let client = reqwest::Client::new();
+                let url = format!("{}/send-sms", remote_url.trim_end_matches('/'));
+                let payload = serde_json::json!({
+                    "to": to,
+                    "message": message
+                });
 
-            if let Err(e) =
-                modem::send_sms(&args.modem_url, &session_id, &token, &to, &message, dry_run).await
-            {
-                eprintln!("Error sending SMS: {}", e);
+                match client.post(&url).json(&payload).send().await {
+                    Ok(res) => {
+                        if res.status().is_success() {
+                            println!("SMS sent successfully via remote server!");
+                        } else {
+                            let status = res.status();
+                            let body = res.text().await.unwrap_or_default();
+                            eprintln!("Error sending SMS via remote server: {} - {}", status, body);
+                        }
+                    }
+                    Err(e) => eprintln!("Failed to connect to remote server: {}", e),
+                }
+            } else {
+                let (session_id, token) = match modem::get_session_info(&args.modem_url).await {
+                    Ok((s, t)) => (s, t),
+                    Err(e) => {
+                        eprintln!("Error getting session info: {}", e);
+                        return;
+                    }
+                };
+                println!("Session ID: {}", session_id);
+                println!("Token: {}", token);
+
+                if let Err(e) =
+                    modem::send_sms(&args.modem_url, &session_id, &token, &to, &message, dry_run)
+                        .await
+                {
+                    eprintln!("Error sending SMS: {}", e);
+                }
             }
         }
         SmsCommand::Receive {
@@ -119,46 +150,97 @@ pub async fn run() {
             sort_by,
             json,
         } => {
-            let (session_id, token) = match modem::get_session_info(&args.modem_url).await {
-                Ok((s, t)) => (s, t),
-                Err(e) => {
-                    eprintln!("Error getting session info: {}", e);
-                    return;
-                }
-            };
-            println!("Session ID: {}", session_id);
-            println!("Token: {}", token);
+            let messages = if let Some(remote_url) = args.remote_url {
+                let client = reqwest::Client::new();
+                let url = format!("{}/get-sms", remote_url.trim_end_matches('/'));
 
-            let params = modem::SmsListParams {
-                box_type,
-                sort_type: sort_by,
-                read_count: count,
-                ascending,
-                unread_preferred,
-            };
+                // Construct query parameters manually to match server's GetSmsRequest
+                let mut params = vec![
+                    ("count", count.to_string()),
+                    ("ascending", ascending.to_string()),
+                    ("unread_preferred", unread_preferred.to_string()),
+                ];
 
-            match modem::get_sms_list(&args.modem_url, &session_id, &token, params).await {
-                Ok(response) => {
-                    if json {
-                        match serde_json::to_string_pretty(&response.messages.message) {
-                            Ok(json_output) => println!("{}", json_output),
-                            Err(e) => eprintln!("Error serializing to JSON: {}", e),
-                        }
-                    } else {
-                        println!("Received {} SMS messages:", response.count);
-                        for msg in response.messages.message {
-                            println!("  From: {}", msg.phone);
-                            println!("  Content: {}", msg.content);
-                            println!("  Date: {}", msg.date);
-                            println!("  Priority: {}", msg.priority);
-                            println!("  SmsType: {}", msg.sms_type);
-                            println!("  Smstat: {}", msg.smstat);
-                            println!("  SaveType: {}", msg.save_type);
-                            println!("  --------------------");
+                // For enums, we need to pass their integer values or string representations that axum expects.
+                // Our server uses #[serde(default = "...")] which might expect strings if they are derived.
+                // Actually BoxType and SortType derive Serialize_repr/Deserialize_repr, so they expect integers.
+                params.push(("box_type", (box_type.clone() as i32).to_string()));
+                params.push(("sort_by", (sort_by.clone() as i32).to_string()));
+
+                match client.get(&url).query(&params).send().await {
+                    Ok(res) => {
+                        if res.status().is_success() {
+                            let remote_res: serde_json::Value =
+                                res.json().await.unwrap_or_default();
+                            // The server returns {"status": "success", "messages": [...]}
+                            if let Some(msgs_val) = remote_res.get("messages") {
+                                let msgs: Vec<crate::modem::SmsMessage> =
+                                    serde_json::from_value(msgs_val.clone()).unwrap_or_default();
+                                msgs
+                            } else {
+                                eprintln!("Invalid response from remote server: {}", remote_res);
+                                return;
+                            }
+                        } else {
+                            let status = res.status();
+                            let body = res.text().await.unwrap_or_default();
+                            eprintln!(
+                                "Error receiving SMS via remote server: {} - {}",
+                                status, body
+                            );
+                            return;
                         }
                     }
+                    Err(e) => {
+                        eprintln!("Failed to connect to remote server: {}", e);
+                        return;
+                    }
                 }
-                Err(e) => eprintln!("Error receiving SMS: {}", e),
+            } else {
+                let (session_id, token) = match modem::get_session_info(&args.modem_url).await {
+                    Ok((s, t)) => (s, t),
+                    Err(e) => {
+                        eprintln!("Error getting session info: {}", e);
+                        return;
+                    }
+                };
+                println!("Session ID: {}", session_id);
+                println!("Token: {}", token);
+
+                let params = modem::SmsListParams {
+                    box_type,
+                    sort_type: sort_by,
+                    read_count: count,
+                    ascending,
+                    unread_preferred,
+                };
+
+                match modem::get_sms_list(&args.modem_url, &session_id, &token, params).await {
+                    Ok(response) => response.messages.message,
+                    Err(e) => {
+                        eprintln!("Error receiving SMS: {}", e);
+                        return;
+                    }
+                }
+            };
+
+            if json {
+                match serde_json::to_string_pretty(&messages) {
+                    Ok(json_output) => println!("{}", json_output),
+                    Err(e) => eprintln!("Error serializing to JSON: {}", e),
+                }
+            } else {
+                println!("Received {} SMS messages:", messages.len());
+                for msg in messages {
+                    println!("  From: {}", msg.phone);
+                    println!("  Content: {}", msg.content);
+                    println!("  Date: {}", msg.date);
+                    println!("  Priority: {}", msg.priority);
+                    println!("  SmsType: {}", msg.sms_type);
+                    println!("  Smstat: {}", msg.smstat);
+                    println!("  SaveType: {}", msg.save_type);
+                    println!("  --------------------");
+                }
             }
         }
         #[cfg(feature = "server")]
@@ -302,6 +384,25 @@ mod tests {
             }
             _ => panic!("Expected Receive command"),
         }
+    }
+
+    #[test]
+    fn test_args_parsing_remote_url() {
+        let args = Args::try_parse_from([
+            "smser",
+            "--remote-url",
+            "http://remote-server:5566",
+            "send",
+            "-t",
+            "1234567890",
+            "-m",
+            "Hello",
+        ])
+        .expect("Failed to parse arguments");
+        assert_eq!(
+            args.remote_url,
+            Some("http://remote-server:5566".to_string())
+        );
     }
 
     #[test]
