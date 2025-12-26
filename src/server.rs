@@ -106,6 +106,7 @@ async fn handler() -> Html<String> {
         <div class="container-fluid">
             <span class="navbar-brand mb-0 h1">smser Gateway</span>
             <div class="d-flex">
+                <a href="https://github.com/ruediger/smser" class="btn btn-outline-info btn-sm me-2" target="_blank">GitHub</a>
                 <a href="/status" class="btn btn-outline-light btn-sm me-2">Status</a>
                 <a href="/metrics" class="btn btn-outline-light btn-sm">Metrics</a>
             </div>

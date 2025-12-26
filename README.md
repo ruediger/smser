@@ -2,6 +2,8 @@
 
 `smser` is a tool and server to send and receive SMS messages using a Huawei E3372 USB modem on Linux. It is designed to run on a Raspberry Pi and includes features like a REST API, Prometheus metrics, and rate limiting. It is mostly implemented using Gemini CLI under human supervision.
 
+GitHub Repo: https://github.com/ruediger/smser
+
 [![Rust](https://github.com/ruediger/smser/actions/workflows/rust.yml/badge.svg)](https://github.com/ruediger/smser/actions/workflows/rust.yml)
 
 ## Warning
