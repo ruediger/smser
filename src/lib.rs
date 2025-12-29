@@ -1,5 +1,6 @@
 #[cfg(feature = "alertmanager")]
 pub mod alertmanager;
+pub mod buildinfo;
 pub mod cli;
 #[cfg(feature = "server")]
 pub mod metrics;

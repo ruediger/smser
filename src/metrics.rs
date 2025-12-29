@@ -131,6 +131,11 @@ pub fn setup_metrics() -> PrometheusHandle {
                 Unit::Seconds,
                 "Start time of the server in Unix seconds"
             );
+            describe_gauge!(
+                "smser_version_info",
+                Unit::Count,
+                "Version information of the server"
+            );
 
             handle
         })

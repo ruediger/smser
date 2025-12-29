@@ -1,13 +1,14 @@
 #[cfg(feature = "alertmanager")]
 use crate::alertmanager::{self, AlertManagerWebhook};
+use crate::buildinfo;
 use crate::metrics::RateLimiter;
 use crate::modem::{self, BoxType, Error as ModemError, SortType}; // Import modem module and alias Error
 use axum::http::StatusCode; // For HTTP status codes
 use axum::response::Html;
 use axum::{
-    Json, Router,
     extract::{Query, State},
     routing::{get, post},
+    Json, Router,
 };
 use metrics::{counter, gauge};
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -66,6 +67,9 @@ pub async fn start_server(
     // Set the start time metric
     gauge!("smser_start_time_seconds").set(start_timestamp);
 
+    // Set the version info metric
+    gauge!("smser_version_info", "version" => buildinfo::version()).set(1.0);
+
     let app_state = AppState {
         modem_url: modem_url.clone(),
         rate_limiter,
@@ -80,7 +84,8 @@ pub async fn start_server(
         .route("/send-sms", post(send_sms_handler))
         .route("/get-sms", get(get_sms_handler))
         .route("/metrics", get(metrics_handler))
-        .route("/status", get(status_handler));
+        .route("/status", get(status_handler))
+        .route("/statusz", get(status_handler));
 
     #[cfg(feature = "alertmanager")]
     let app = app.route("/alertmanager", post(alertmanager_handler));
@@ -118,9 +123,18 @@ pub async fn start_server(
     }
 }
 
+fn html_escape(s: &str) -> String {
+    s.replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('"', "&#39;")
+}
+
 async fn handler() -> Html<String> {
     counter!("smser_http_requests_total", "endpoint" => "/").increment(1);
-    let html = r#"<!DOCTYPE html>
+    let html = format!(
+        r#"<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -128,18 +142,19 @@ async fn handler() -> Html<String> {
     <title>smser - SMS Gateway</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        body { background-color: #f8f9fa; }
-        .container { max-width: 800px; margin-top: 2rem; }
-        .msg-card { margin-bottom: 1rem; }
-        .date { font-size: 0.85rem; color: #6c757d; }
+        body {{ background-color: #f8f9fa; }}
+        .container {{ max-width: 800px; margin-top: 2rem; }}
+        .msg-card {{ margin-bottom: 1rem; }}
+        .date {{ font-size: 0.85rem; color: #6c757d; }}
     </style>
 </head>
 <body>
     <nav class="navbar navbar-dark bg-dark mb-4">
         <div class="container-fluid">
             <span class="navbar-brand mb-0 h1">smser Gateway</span>
-            <div class="d-flex">
-                <a href="https://github.com/ruediger/smser" class="btn btn-outline-info btn-sm me-2" target="_blank">GitHub</a>
+            <div class="d-flex align-items-center">
+                <span class="badge text-bg-secondary me-2">{}</span>
+                <a href="{}" class="btn btn-outline-info btn-sm me-2" target="_blank">GitHub</a>
                 <a href="/status" class="btn btn-outline-light btn-sm me-2">Status</a>
                 <a href="/metrics" class="btn btn-outline-light btn-sm">Metrics</a>
             </div>
@@ -189,38 +204,38 @@ async fn handler() -> Html<String> {
     </div>
 
     <script>
-        async function fetchMessages() {
-            try {
+        async function fetchMessages() {{
+            try {{
                 const response = await fetch('/get-sms?count=10');
                 const data = await response.json();
                 const list = document.getElementById('messagesList');
 
-                if (data.status === 'success' && data.messages) {
-                    if (data.messages.length === 0) {
+                if (data.status === 'success' && data.messages) {{
+                    if (data.messages.length === 0) {{
                         list.innerHTML = '<div class="text-center p-4">No messages found.</div>';
                         return;
-                    }
+                    }}
 
                     list.innerHTML = data.messages.map(msg => `
                         <div class="card msg-card border-0 border-bottom">
                             <div class="card-body px-0">
                                 <div class="d-flex justify-content-between align-items-start">
-                                    <h6 class="mb-1">${msg.Phone}</h6>
-                                    <span class="date">${msg.Date}</span>
+                                    <h6 class="mb-1">${{msg.Phone}}</h6>
+                                    <span class="date">${{msg.Date}}</span>
                                 </div>
-                                <p class="card-text mb-0">${msg.Content}</p>
+                                <p class="card-text mb-0">${{msg.Content}}</p>
                             </div>
                         </div>
                     `).join('');
-                } else {
-                    list.innerHTML = `<div class="alert alert-danger">Error: ${data.message || 'Failed to load'}</div>`;
-                }
-            } catch (e) {
+                }} else {{
+                    list.innerHTML = `<div class="alert alert-danger">Error: ${{data.message || 'Failed to load'}}</div>`;
+                }}
+            }} catch (e) {{
                 document.getElementById('messagesList').innerHTML = `<div class="alert alert-danger">Error connecting to server.</div>`;
-            }
-        }
+            }}
+        }}
 
-        document.getElementById('sendForm').addEventListener('submit', async (e) => {
+        document.getElementById('sendForm').addEventListener('submit', async (e) => {{
             e.preventDefault();
             const btn = document.getElementById('sendBtn');
             const alert = document.getElementById('sendAlert');
@@ -230,35 +245,38 @@ async fn handler() -> Html<String> {
             btn.disabled = true;
             alert.className = 'mt-3 d-none alert';
 
-            try {
-                const response = await fetch('/send-sms', {
+            try {{
+                const response = await fetch('/send-sms', {{
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ to, message })
-                });
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ to, message }})
+                }});
                 const data = await response.json();
 
-                alert.className = `mt-3 alert alert-${data.status === 'success' ? 'success' : 'danger'}`;
+                alert.className = `mt-3 alert alert-${{data.status === 'success' ? 'success' : 'danger'}}`;
                 alert.innerText = data.message || (data.status === 'success' ? 'Sent!' : 'Failed');
                 alert.classList.remove('d-none');
 
-                if (data.status === 'success') {
+                if (data.status === 'success') {{
                     document.getElementById('message').value = '';
-                }
-            } catch (e) {
+                }}
+            }} catch (e) {{
                 alert.className = 'mt-3 alert alert-danger';
                 alert.innerText = 'Network error.';
                 alert.classList.remove('d-none');
-            } finally {
+            }} finally {{
                 btn.disabled = false;
-            }
-        });
+            }}
+        }});
 
         // Initial load
         fetchMessages();
     </script>
 </body>
-</html>"#;
+</html>"#,
+        html_escape(buildinfo::version()),
+        html_escape(buildinfo::repository())
+    );
     Html(html.to_string())
 }
 
@@ -298,7 +316,11 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
     <h1>SMS Server Status</h1>
     <div class="card">
         <h2>Configuration</h2>
+        <div class="stat"><span class="label">Version:</span> {}</div>
         <div class="stat"><span class="label">Modem URL:</span> {}</div>
+    </div>
+    <div class="card">
+        <h2>Status</h2>
         <div class="stat"><span class="label">Uptime:</span> {}</div>
     </div>
     <div class="card">
@@ -308,7 +330,8 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
     </div>
 </body>
 </html>"#,
-        state.modem_url,
+        html_escape(buildinfo::version()),
+        html_escape(&state.modem_url),
         uptime_str,
         status.hourly_usage,
         status.hourly_limit,
@@ -549,7 +572,7 @@ mod tests {
         let modem_url = "http://localhost:8080".to_string(); // Dummy URL for the test
 
         let (tx, rx) = tokio::sync::oneshot::channel(); // New
-        // Spawn the server in a background task
+                                                        // Spawn the server in a background task
         let server_handle = tokio::spawn(async move {
             let handle = setup_metrics();
             let rate_limiter = RateLimiter::new(100, 1000);
@@ -627,6 +650,8 @@ mod tests {
         assert!(body.contains("smser_http_requests_total"));
         assert!(body.contains("endpoint=\"/metrics\""));
         assert!(body.contains("smser_start_time_seconds"));
+        assert!(body.contains("smser_version_info"));
+        assert!(body.contains("version="));
 
         tx.send(()).unwrap();
         server_handle.await.unwrap();
@@ -745,7 +770,7 @@ mod tests {
         let modem_url = "http://nonexistent.com".to_string(); // Simulate unavailable modem
 
         let (tx, rx) = tokio::sync::oneshot::channel(); // New
-        // Spawn the server in a background task
+                                                        // Spawn the server in a background task
         let server_handle = tokio::spawn(async move {
             let handle = setup_metrics();
             let rate_limiter = RateLimiter::new(100, 1000);
