@@ -51,6 +51,12 @@ pub async fn start_server(
     tls_cert: Option<PathBuf>,
     tls_key: Option<PathBuf>,
 ) {
+    // Install default crypto provider for rustls 0.23+
+    #[cfg(feature = "server")]
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
     let start_time = Instant::now();
     let start_timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
