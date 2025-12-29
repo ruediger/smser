@@ -21,6 +21,7 @@ tracing = "0.1"
 
 # Server specific dependencies
 axum = { version = "0.7", optional = true }
+axum-server = { version = "0.7", features = ["tls-rustls"], optional = true }
 tower-http = { version = "0.6.8", features = ["trace"], optional = true }
 metrics = { version = "0.24.3", optional = true }
 metrics-exporter-prometheus = { version = "0.18.1", default-features = false, optional = true }
@@ -28,5 +29,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = tr
 
 [features]
 default = ["server", "alertmanager"]
-server = ["dep:axum", "dep:tower-http", "dep:metrics", "dep:metrics-exporter-prometheus", "dep:tracing-subscriber"]
+server = ["dep:axum", "dep:axum-server", "dep:tower-http", "dep:metrics", "dep:metrics-exporter-prometheus", "dep:tracing-subscriber"]
 alertmanager = ["server"]

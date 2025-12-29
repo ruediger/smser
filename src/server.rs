@@ -12,8 +12,14 @@ use axum::{
 use metrics::{counter, gauge};
 use metrics_exporter_prometheus::PrometheusHandle;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
+
+#[cfg(feature = "server")]
+use axum_server::tls_rustls::RustlsConfig;
+#[cfg(feature = "server")]
+use axum_server::Handle;
 use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 
@@ -42,6 +48,8 @@ pub async fn start_server(
     handle: PrometheusHandle,
     rate_limiter: RateLimiter,
     #[cfg(feature = "alertmanager")] alert_phone_number: Option<String>,
+    tls_cert: Option<PathBuf>,
+    tls_key: Option<PathBuf>,
 ) {
     let start_time = Instant::now();
     let start_timestamp = SystemTime::now()
@@ -77,12 +85,31 @@ pub async fn start_server(
     let addr = listener.local_addr().unwrap();
     println!("listening on {}", addr);
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
+    if let (Some(cert), Some(key)) = (tls_cert, tls_key) {
+        let config = RustlsConfig::from_pem_file(cert, key)
+            .await
+            .expect("Failed to load TLS certificate and key");
+
+        let handle = Handle::new();
+        let handle_clone = handle.clone();
+        tokio::spawn(async move {
             shutdown_signal.await.ok();
-        })
-        .await
-        .unwrap();
+            handle_clone.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
+        });
+
+        axum_server::from_tcp_rustls(listener.into_std().unwrap(), config)
+            .handle(handle)
+            .serve(app.into_make_service())
+            .await
+            .unwrap();
+    } else {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                shutdown_signal.await.ok();
+            })
+            .await
+            .unwrap();
+    }
 }
 
 async fn handler() -> Html<String> {
@@ -528,6 +555,8 @@ mod tests {
                 rate_limiter,
                 #[cfg(feature = "alertmanager")]
                 None,
+                None,
+                None,
             )
             .await; // Pass listener // Pass listener // Pass listener // Pass listener
         });
@@ -569,6 +598,8 @@ mod tests {
                 handle,
                 rate_limiter,
                 #[cfg(feature = "alertmanager")]
+                None,
+                None,
                 None,
             )
             .await; // Pass listener // Pass listener // Pass listener
@@ -613,6 +644,8 @@ mod tests {
                 rate_limiter,
                 #[cfg(feature = "alertmanager")]
                 None,
+                None,
+                None,
             )
             .await; // Pass listener // Pass listener // Pass listener
         });
@@ -654,6 +687,8 @@ mod tests {
                 handle,
                 rate_limiter,
                 Some("+441234567890".to_string()),
+                None,
+                None,
             )
             .await;
         });
@@ -715,6 +750,8 @@ mod tests {
                 handle,
                 rate_limiter,
                 #[cfg(feature = "alertmanager")]
+                None,
+                None,
                 None,
             )
             .await; // Pass listener // Pass listener // Pass listener // Pass listener

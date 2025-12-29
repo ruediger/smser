@@ -87,6 +87,14 @@ pub enum SmsCommand {
         /// Daily SMS limit
         #[arg(long, default_value_t = 1000)]
         daily_limit: u32,
+
+        /// Path to TLS certificate file
+        #[arg(long)]
+        tls_cert: Option<std::path::PathBuf>,
+
+        /// Path to TLS key file
+        #[arg(long)]
+        tls_key: Option<std::path::PathBuf>,
     },
 }
 
@@ -250,6 +258,8 @@ pub async fn run() {
             alert_to,
             hourly_limit,
             daily_limit,
+            tls_cert,
+            tls_key,
         } => {
             tracing_subscriber::registry()
                 .with(tracing_subscriber::EnvFilter::new(
@@ -279,6 +289,8 @@ pub async fn run() {
                 rate_limiter,
                 #[cfg(feature = "alertmanager")]
                 alert_to,
+                tls_cert,
+                tls_key,
             )
             .await;
         }
@@ -429,12 +441,16 @@ mod tests {
                 alert_to,
                 hourly_limit,
                 daily_limit,
+                tls_cert,
+                tls_key,
             } => {
                 assert_eq!(port, 9000);
                 #[cfg(feature = "alertmanager")]
                 assert_eq!(alert_to, None);
                 assert_eq!(hourly_limit, 50);
                 assert_eq!(daily_limit, 500);
+                assert_eq!(tls_cert, None);
+                assert_eq!(tls_key, None);
             }
             _ => panic!("Expected Serve command"),
         }

@@ -10,6 +10,8 @@ GitHub Repo: https://github.com/ruediger/smser
 
 There is no authentication if you run this in server mode. Anyone with access to the server can read and send SMS!
 
+The Huawei E3372 USB modem uses a web based interface without TLS support. All communication with it is in plain text, but should stay within the local host/modem.
+
 Also the code is mostly written by AI (Gemini CLI using Gemini 2.5 and 3.0 models).
 
 ## Features
