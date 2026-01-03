@@ -399,15 +399,8 @@ mod tests {
     #[test]
     fn test_args_parsing_modem_url_env() {
         temp_env::with_var("SMSER_MODEM_URL", Some("http://env-modem:8080"), || {
-            let args = Args::try_parse_from([
-                "smser",
-                "send",
-                "-t",
-                "1234567890",
-                "-m",
-                "Hello",
-            ])
-            .expect("Failed to parse arguments");
+            let args = Args::try_parse_from(["smser", "send", "-t", "1234567890", "-m", "Hello"])
+                .expect("Failed to parse arguments");
             assert_eq!(args.modem_url, "http://env-modem:8080");
         });
     }
@@ -434,19 +427,9 @@ mod tests {
     #[test]
     fn test_args_parsing_remote_url_env() {
         temp_env::with_var("SMSER_REMOTE_URL", Some("http://env-server:7788"), || {
-            let args = Args::try_parse_from([
-                "smser",
-                "send",
-                "-t",
-                "1234567890",
-                "-m",
-                "Hello",
-            ])
-            .expect("Failed to parse arguments");
-            assert_eq!(
-                args.remote_url,
-                Some("http://env-server:7788".to_string())
-            );
+            let args = Args::try_parse_from(["smser", "send", "-t", "1234567890", "-m", "Hello"])
+                .expect("Failed to parse arguments");
+            assert_eq!(args.remote_url, Some("http://env-server:7788".to_string()));
         });
     }
 
@@ -472,40 +455,51 @@ mod tests {
     #[test]
     #[cfg(feature = "server")]
     fn test_args_parsing_serve() {
-        let args = Args::try_parse_from([
-            "smser",
-            "--modem-url",
-            "http://test.com",
-            "serve",
-            "--port",
-            "9000",
-            "--hourly-limit",
-            "50",
-            "--daily-limit",
-            "500",
-        ])
-        .expect("Failed to parse arguments");
-        assert_eq!(args.modem_url, "http://test.com");
-        match args.command {
-            SmsCommand::Serve {
-                port,
-                #[cfg(feature = "alertmanager")]
-                alert_to,
-                hourly_limit,
-                daily_limit,
-                tls_cert,
-                tls_key,
-            } => {
-                assert_eq!(port, 9000);
-                #[cfg(feature = "alertmanager")]
-                assert_eq!(alert_to, None);
-                assert_eq!(hourly_limit, 50);
-                assert_eq!(daily_limit, 500);
-                assert_eq!(tls_cert, None);
-                assert_eq!(tls_key, None);
-            }
-            _ => panic!("Expected Serve command"),
-        }
+        temp_env::with_vars(
+            [
+                ("SMSER_ALERT_TO", None::<String>),
+                ("SMSER_MODEM_URL", None::<String>),
+                ("SMSER_REMOTE_URL", None::<String>),
+                ("SMSER_PORT", None::<String>),
+            ],
+            || {
+                let args = Args::try_parse_from([
+                    "smser",
+                    "--modem-url",
+                    "http://test.com",
+                    "serve",
+                    "--port",
+                    "9000",
+                    "--hourly-limit",
+                    "50",
+                    "--daily-limit",
+                    "500",
+                ])
+                .expect("Failed to parse arguments");
+                assert_eq!(args.modem_url, "http://test.com");
+                match args.command {
+                    SmsCommand::Serve {
+                        port,
+                        #[cfg(feature = "alertmanager")]
+                        alert_to,
+                        hourly_limit,
+                        daily_limit,
+                        tls_cert,
+                        tls_key,
+                        ..
+                    } => {
+                        assert_eq!(port, 9000);
+                        #[cfg(feature = "alertmanager")]
+                        assert_eq!(alert_to, None);
+                        assert_eq!(hourly_limit, 50);
+                        assert_eq!(daily_limit, 500);
+                        assert_eq!(tls_cert, None);
+                        assert_eq!(tls_key, None);
+                    }
+                    _ => panic!("Expected Serve command"),
+                }
+            },
+        );
     }
 
     // These tests rely on the modem being unavailable, which is typically true during CI/CD or local development without a modem.
@@ -523,7 +517,7 @@ mod tests {
             "http://nonexistent.com",
             "dummy_session_id",
             "dummy_token",
-            "+1234567890",
+            "+12 34 567 890",
             "Test message",
             true,
         )

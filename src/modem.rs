@@ -340,10 +340,12 @@ pub async fn send_sms(
         .build()?;
     let url = format!("{}/api/sms/send-sms", modem_url);
 
+    let to_clean: String = to.chars().filter(|c| !c.is_whitespace()).collect();
+
     let sms_request = SmsRequest {
         index: -1,
         phones: Phones {
-            phone: vec![to.to_string()],
+            phone: vec![to_clean],
         },
         sca: "".to_string(),
         content: message.to_string(),
