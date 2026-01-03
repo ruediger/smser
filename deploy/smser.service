@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 User=pi
-ExecStart=/usr/local/bin/smser serve
+ExecStart=/usr/local/bin/smser serve --port 5566
 Restart=on-failure
 Environment=RUST_LOG=info
 Environment=SMSER_MODEM_URL=http://192.168.8.1

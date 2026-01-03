@@ -77,7 +77,7 @@ pub enum SmsCommand {
 
         /// The phone number to send alerts to
         #[cfg(feature = "alertmanager")]
-        #[arg(long)]
+        #[arg(long, env = "SMSER_ALERT_TO")]
         alert_to: Option<String>,
 
         /// Hourly SMS limit
@@ -447,6 +447,25 @@ mod tests {
                 args.remote_url,
                 Some("http://env-server:7788".to_string())
             );
+        });
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    #[cfg(feature = "alertmanager")]
+    fn test_args_parsing_alert_to_env() {
+        temp_env::with_var("SMSER_ALERT_TO", Some("+447700900123"), || {
+            let args = Args::try_parse_from(["smser", "serve"]).expect("Failed to parse arguments");
+            match args.command {
+                SmsCommand::Serve {
+                    #[cfg(feature = "alertmanager")]
+                    alert_to,
+                    ..
+                } => {
+                    assert_eq!(alert_to, Some("+447700900123".to_string()));
+                }
+                _ => panic!("Expected Serve command"),
+            }
         });
     }
 
