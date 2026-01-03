@@ -804,4 +804,71 @@ mod tests {
         tx.send(()).unwrap(); // New, send shutdown signal
         server_handle.await.unwrap(); // Wait for server to shut down cleanly. // New
     }
+
+    #[tokio::test]
+    async fn test_start_server_tls() {
+        // Generate a self-signed certificate
+        let subject_alt_names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
+        let cert = rcgen::generate_simple_self_signed(subject_alt_names).unwrap();
+        let cert_pem = cert.cert.pem();
+        let key_pem = cert.signing_key.serialize_pem();
+
+        // Write cert and key to temporary files
+        let cert_path = std::env::temp_dir().join("smser_test_cert.pem");
+        let key_path = std::env::temp_dir().join("smser_test_key.pem");
+        std::fs::write(&cert_path, &cert_pem).unwrap();
+        std::fs::write(&key_path, &key_pem).unwrap();
+
+        // Find an available port for testing
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let modem_url = "http://localhost:8080".to_string();
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let cert_path_clone = cert_path.clone();
+        let key_path_clone = key_path.clone();
+
+        // Spawn the server in a background task
+        let server_handle = tokio::spawn(async move {
+            let handle = setup_metrics();
+            let rate_limiter = RateLimiter::new(100, 1000);
+            let config = ServerConfig {
+                modem_url,
+                prometheus_handle: handle,
+                rate_limiter,
+                #[cfg(feature = "alertmanager")]
+                alert_phone_number: None,
+                tls_cert: Some(cert_path_clone),
+                tls_key: Some(key_path_clone),
+            };
+            start_server(listener, rx, config).await;
+        });
+
+        // Give the server a moment to start
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Make a request to the server using HTTPS
+        // We need to disable certificate verification because it's a self-signed cert
+        let client = Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap();
+
+        let response = client
+            .get(format!("https://127.0.0.1:{}", port))
+            .send()
+            .await
+            .expect("Failed to send request");
+
+        // Assert the response
+        assert!(response.status().is_success());
+        let body = response.text().await.expect("Failed to get response body");
+        assert!(body.contains("smser Gateway"));
+
+        // Clean up
+        tx.send(()).unwrap();
+        server_handle.await.unwrap();
+        let _ = std::fs::remove_file(cert_path);
+        let _ = std::fs::remove_file(key_path);
+    }
 }

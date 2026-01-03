@@ -34,4 +34,5 @@ server = ["dep:axum", "dep:axum-server", "dep:rustls", "dep:tower-http", "dep:me
 alertmanager = ["server"]
 
 [dev-dependencies]
+rcgen = "0.14.6"
 temp-env = "0.3.6"
