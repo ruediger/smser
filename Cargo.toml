@@ -7,7 +7,7 @@ categories = ["command-line-utilities", "hardware-support"]
 repository = "https://github.com/ruediger/smser"
 
 [dependencies]
-clap = { version = "4.5.53", features = ["derive"] }
+clap = { version = "4.5.53", features = ["derive", "env"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 quick-xml = { version = "0.38", features = ["serialize"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -32,3 +32,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = tr
 default = ["server", "alertmanager"]
 server = ["dep:axum", "dep:axum-server", "dep:rustls", "dep:tower-http", "dep:metrics", "dep:metrics-exporter-prometheus", "dep:tracing-subscriber"]
 alertmanager = ["server"]
+
+[dev-dependencies]
+temp-env = "0.3.6"

@@ -19,7 +19,7 @@ pub struct Args {
     pub modem_url: String,
 
     /// The URL of a remote smser server (e.g., "http://localhost:8080")
-    #[arg(long)]
+    #[arg(long, env = "SMSER_REMOTE_URL")]
     pub remote_url: Option<String>,
 
     #[command(subcommand)]
@@ -413,6 +413,25 @@ mod tests {
             args.remote_url,
             Some("http://remote-server:5566".to_string())
         );
+    }
+
+    #[test]
+    fn test_args_parsing_remote_url_env() {
+        temp_env::with_var("SMSER_REMOTE_URL", Some("http://env-server:7788"), || {
+            let args = Args::try_parse_from([
+                "smser",
+                "send",
+                "-t",
+                "1234567890",
+                "-m",
+                "Hello",
+            ])
+            .expect("Failed to parse arguments");
+            assert_eq!(
+                args.remote_url,
+                Some("http://env-server:7788".to_string())
+            );
+        });
     }
 
     #[test]
