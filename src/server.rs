@@ -6,9 +6,9 @@ use crate::modem::{self, BoxType, Error as ModemError, SortType}; // Import mode
 use axum::http::StatusCode; // For HTTP status codes
 use axum::response::Html;
 use axum::{
+    Json, Router,
     extract::{Query, State},
     routing::{get, post},
-    Json, Router,
 };
 use metrics::{counter, gauge};
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -18,9 +18,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 
 #[cfg(feature = "server")]
-use axum_server::tls_rustls::RustlsConfig;
-#[cfg(feature = "server")]
 use axum_server::Handle;
+#[cfg(feature = "server")]
+use axum_server::tls_rustls::RustlsConfig;
 use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 
@@ -28,6 +28,16 @@ use tracing::{error, info};
 pub struct SendSmsRequest {
     pub to: String,
     pub message: String,
+}
+
+pub struct ServerConfig {
+    pub modem_url: String,
+    pub prometheus_handle: PrometheusHandle,
+    pub rate_limiter: RateLimiter,
+    #[cfg(feature = "alertmanager")]
+    pub alert_phone_number: Option<String>,
+    pub tls_cert: Option<PathBuf>,
+    pub tls_key: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -44,13 +54,8 @@ use tokio::sync::oneshot; // New import
 
 pub async fn start_server(
     listener: TcpListener,
-    modem_url: String,
     shutdown_signal: oneshot::Receiver<()>,
-    handle: PrometheusHandle,
-    rate_limiter: RateLimiter,
-    #[cfg(feature = "alertmanager")] alert_phone_number: Option<String>,
-    tls_cert: Option<PathBuf>,
-    tls_key: Option<PathBuf>,
+    config: ServerConfig,
 ) {
     // Install default crypto provider for rustls 0.23+
     #[cfg(feature = "server")]
@@ -71,11 +76,11 @@ pub async fn start_server(
     gauge!("smser_version_info", "version" => buildinfo::version()).set(1.0);
 
     let app_state = AppState {
-        modem_url: modem_url.clone(),
-        rate_limiter,
-        prometheus_handle: handle,
+        modem_url: config.modem_url.clone(),
+        rate_limiter: config.rate_limiter,
+        prometheus_handle: config.prometheus_handle,
         #[cfg(feature = "alertmanager")]
-        alert_phone_number,
+        alert_phone_number: config.alert_phone_number,
         start_time,
     };
 
@@ -96,7 +101,7 @@ pub async fn start_server(
     let addr = listener.local_addr().unwrap();
     println!("listening on {}", addr);
 
-    if let (Some(cert), Some(key)) = (tls_cert, tls_key) {
+    if let (Some(cert), Some(key)) = (config.tls_cert, config.tls_key) {
         let config = RustlsConfig::from_pem_file(cert, key)
             .await
             .expect("Failed to load TLS certificate and key");
@@ -572,22 +577,20 @@ mod tests {
         let modem_url = "http://localhost:8080".to_string(); // Dummy URL for the test
 
         let (tx, rx) = tokio::sync::oneshot::channel(); // New
-                                                        // Spawn the server in a background task
+        // Spawn the server in a background task
         let server_handle = tokio::spawn(async move {
             let handle = setup_metrics();
             let rate_limiter = RateLimiter::new(100, 1000);
-            start_server(
-                listener,
+            let config = ServerConfig {
                 modem_url,
-                rx,
-                handle,
+                prometheus_handle: handle,
                 rate_limiter,
                 #[cfg(feature = "alertmanager")]
-                None,
-                None,
-                None,
-            )
-            .await; // Pass listener // Pass listener // Pass listener // Pass listener
+                alert_phone_number: None,
+                tls_cert: None,
+                tls_key: None,
+            };
+            start_server(listener, rx, config).await;
         });
 
         // Give the server a moment to start
@@ -620,18 +623,16 @@ mod tests {
             let handle = setup_metrics();
             crate::metrics::update_limits_metrics(100, 1000);
             let rate_limiter = RateLimiter::new(100, 1000);
-            start_server(
-                listener,
+            let config = ServerConfig {
                 modem_url,
-                rx,
-                handle,
+                prometheus_handle: handle,
                 rate_limiter,
                 #[cfg(feature = "alertmanager")]
-                None,
-                None,
-                None,
-            )
-            .await; // Pass listener // Pass listener // Pass listener
+                alert_phone_number: None,
+                tls_cert: None,
+                tls_key: None,
+            };
+            start_server(listener, rx, config).await;
         });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -667,18 +668,16 @@ mod tests {
         let server_handle = tokio::spawn(async move {
             let handle = setup_metrics();
             let rate_limiter = RateLimiter::new(100, 1000);
-            start_server(
-                listener,
+            let config = ServerConfig {
                 modem_url,
-                rx,
-                handle,
+                prometheus_handle: handle,
                 rate_limiter,
                 #[cfg(feature = "alertmanager")]
-                None,
-                None,
-                None,
-            )
-            .await; // Pass listener // Pass listener // Pass listener
+                alert_phone_number: None,
+                tls_cert: None,
+                tls_key: None,
+            };
+            start_server(listener, rx, config).await;
         });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -711,17 +710,15 @@ mod tests {
         let server_handle = tokio::spawn(async move {
             let handle = setup_metrics();
             let rate_limiter = RateLimiter::new(100, 1000);
-            start_server(
-                listener,
+            let config = ServerConfig {
                 modem_url,
-                rx,
-                handle,
+                prometheus_handle: handle,
                 rate_limiter,
-                Some("+441234567890".to_string()),
-                None,
-                None,
-            )
-            .await;
+                alert_phone_number: Some("+441234567890".to_string()),
+                tls_cert: None,
+                tls_key: None,
+            };
+            start_server(listener, rx, config).await;
         });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -770,22 +767,20 @@ mod tests {
         let modem_url = "http://nonexistent.com".to_string(); // Simulate unavailable modem
 
         let (tx, rx) = tokio::sync::oneshot::channel(); // New
-                                                        // Spawn the server in a background task
+        // Spawn the server in a background task
         let server_handle = tokio::spawn(async move {
             let handle = setup_metrics();
             let rate_limiter = RateLimiter::new(100, 1000);
-            start_server(
-                listener,
+            let config = ServerConfig {
                 modem_url,
-                rx,
-                handle,
+                prometheus_handle: handle,
                 rate_limiter,
                 #[cfg(feature = "alertmanager")]
-                None,
-                None,
-                None,
-            )
-            .await; // Pass listener // Pass listener // Pass listener // Pass listener
+                alert_phone_number: None,
+                tls_cert: None,
+                tls_key: None,
+            };
+            start_server(listener, rx, config).await;
         });
 
         // Give the server a moment to start

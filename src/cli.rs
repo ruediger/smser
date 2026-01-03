@@ -281,18 +281,16 @@ pub async fn run() {
                 .await
                 .expect("Failed to bind to port");
             let (_tx, rx) = tokio::sync::oneshot::channel(); // Create a channel
-            crate::server::start_server(
-                listener,
-                args.modem_url,
-                rx,
-                handle,
+            let config = crate::server::ServerConfig {
+                modem_url: args.modem_url,
+                prometheus_handle: handle,
                 rate_limiter,
                 #[cfg(feature = "alertmanager")]
-                alert_to,
+                alert_phone_number: alert_to,
                 tls_cert,
                 tls_key,
-            )
-            .await;
+            };
+            crate::server::start_server(listener, rx, config).await;
         }
     }
 }
