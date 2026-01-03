@@ -15,7 +15,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[command(version, about, long_about = None)]
 pub struct Args {
     /// The URL of the modem (e.g., "http://192.168.8.1")
-    #[arg(long, default_value = "http://192.168.8.1")]
+    #[arg(long, default_value = "http://192.168.8.1", env = "SMSER_MODEM_URL")]
     pub modem_url: String,
 
     /// The URL of a remote smser server (e.g., "http://localhost:8080")
@@ -394,6 +394,22 @@ mod tests {
             }
             _ => panic!("Expected Receive command"),
         }
+    }
+
+    #[test]
+    fn test_args_parsing_modem_url_env() {
+        temp_env::with_var("SMSER_MODEM_URL", Some("http://env-modem:8080"), || {
+            let args = Args::try_parse_from([
+                "smser",
+                "send",
+                "-t",
+                "1234567890",
+                "-m",
+                "Hello",
+            ])
+            .expect("Failed to parse arguments");
+            assert_eq!(args.modem_url, "http://env-modem:8080");
+        });
     }
 
     #[test]

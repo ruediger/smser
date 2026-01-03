@@ -1,0 +1,14 @@
+[Unit]
+Description=smser SMS Gateway
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+ExecStart=/usr/local/bin/smser serve
+Restart=on-failure
+Environment=RUST_LOG=info
+Environment=SMSER_MODEM_URL=http://192.168.8.1
+
+[Install]
+WantedBy=multi-user.target
