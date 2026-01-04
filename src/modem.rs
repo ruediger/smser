@@ -1,10 +1,10 @@
-use clap::ValueEnum;
 use quick_xml::de::from_str;
 use quick_xml::se::to_string;
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
-use serde_repr::{Deserialize_repr, Serialize_repr};
-use strum_macros::{Display, EnumString};
+
+// Re-export types for backwards compatibility
+pub use crate::types::{BoxType, Priority, SmsMessage, SmsStat, SmsType, SortType};
 
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename = "error")]
@@ -68,37 +68,6 @@ pub struct SessionInfo {
     pub token: String,
 }
 
-#[derive(
-    Clone, Debug, PartialEq, Serialize_repr, Deserialize_repr, Display, ValueEnum, EnumString,
-)]
-#[strum(serialize_all = "kebab-case")]
-#[repr(i32)]
-pub enum BoxType {
-    LocalInbox = 1,
-    LocalSent = 2,
-    LocalDraft = 3,
-    LocalTrash = 4,
-    SimInbox = 5,
-    SimSent = 6,
-    SimDraft = 7,
-    MixInbox = 8,
-    MixSent = 9,
-    MixDraft = 10,
-    Unknown = -1, // Default variant for unknown values
-}
-
-#[derive(
-    Clone, Debug, PartialEq, Serialize_repr, Deserialize_repr, Display, ValueEnum, EnumString,
-)]
-#[strum(serialize_all = "kebab-case")]
-#[repr(i32)]
-pub enum SortType {
-    Date = 0,
-    Phone = 1,
-    Index = 2,
-    Unknown = -1, // Default variant for unknown values
-}
-
 /// Represents the SMS list request XML
 #[derive(Debug, Serialize, PartialEq)]
 #[serde(rename = "request")]
@@ -115,68 +84,6 @@ pub struct SmsListRequest {
     pub ascending: i32,
     #[serde(rename = "UnreadPreferred")]
     pub unread_preferred: i32,
-}
-
-#[derive(
-    Clone, Debug, PartialEq, Serialize_repr, Deserialize_repr, Display, ValueEnum, EnumString,
-)]
-#[strum(serialize_all = "kebab-case")]
-#[repr(i32)]
-pub enum SmsType {
-    Single = 1,
-    Multipart = 2,
-    Unicode = 5,
-    DeliveryConfirmationSuccess = 7,
-    DeliveryConfirmationFailure = 8,
-    Unknown = -1, // Default variant for unknown values
-}
-
-#[derive(
-    Clone, Debug, PartialEq, Serialize_repr, Deserialize_repr, Display, ValueEnum, EnumString,
-)]
-#[strum(serialize_all = "kebab-case")]
-#[repr(i32)]
-pub enum Priority {
-    Normal = 0,
-    Interactive = 1,
-    Urgent = 2,
-    Emergency = 3,
-    Unknown = 4, // Default variant for unknown values
-}
-
-#[derive(
-    Clone, Debug, PartialEq, Serialize_repr, Deserialize_repr, Display, ValueEnum, EnumString,
-)]
-#[strum(serialize_all = "kebab-case")]
-#[repr(i32)]
-pub enum SmsStat {
-    Unread = 0,
-    Read = 1,
-    Unknown = -1, // Default variant for unknown values
-}
-
-/// Represents a single SMS message in the response
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename = "Message")]
-pub struct SmsMessage {
-    #[serde(rename = "Smstat")]
-    pub smstat: SmsStat,
-    #[serde(rename = "Index")]
-    pub index: i32,
-    #[serde(rename = "Phone")]
-    pub phone: String,
-    #[serde(rename = "Content")]
-    pub content: String,
-    #[serde(rename = "Date")]
-    pub date: String,
-    #[serde(rename = "Sca")]
-    pub sca: String,
-    #[serde(rename = "SaveType")]
-    pub save_type: i32,
-    #[serde(rename = "Priority")]
-    pub priority: Priority,
-    #[serde(rename = "SmsType")]
-    pub sms_type: SmsType,
 }
 
 /// Represents the Messages wrapper in the SMS list response

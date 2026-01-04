@@ -1,6 +1,8 @@
 #[cfg(feature = "server")]
 use crate::metrics::{RateLimiter, setup_metrics, update_limits_metrics};
-use crate::modem::{self, BoxType, SortType};
+#[cfg(feature = "modem")]
+use crate::modem;
+use crate::types::{BoxType, SmsMessage, SortType};
 use clap::Parser;
 use serde_json;
 #[cfg(feature = "server")]
@@ -15,12 +17,21 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[command(version, about, long_about = None)]
 pub struct Args {
     /// The URL of the modem (e.g., "http://192.168.8.1")
+    #[cfg(feature = "modem")]
     #[arg(long, default_value = "http://192.168.8.1", env = "SMSER_MODEM_URL")]
     pub modem_url: String,
 
+    // When the modem feature is enabled, remote_url is optional (can talk directly to modem).
+    // When the modem feature is disabled, remote_url is required (client-only mode).
     /// The URL of a remote smser server (e.g., "http://localhost:8080")
+    #[cfg(feature = "modem")]
     #[arg(long, env = "SMSER_REMOTE_URL")]
     pub remote_url: Option<String>,
+
+    /// The URL of a remote smser server (e.g., "http://localhost:8080")
+    #[cfg(not(feature = "modem"))]
+    #[arg(long, env = "SMSER_REMOTE_URL")]
+    pub remote_url: String,
 
     #[command(subcommand)]
     pub command: SmsCommand,
@@ -107,7 +118,18 @@ pub async fn run() {
             message,
             dry_run,
         } => {
-            if let Some(remote_url) = args.remote_url {
+            // Determine if we should use remote server
+            #[cfg(feature = "modem")]
+            let use_remote = args.remote_url.is_some();
+            #[cfg(not(feature = "modem"))]
+            let use_remote = true;
+
+            if use_remote {
+                #[cfg(feature = "modem")]
+                let remote_url = args.remote_url.as_ref().unwrap();
+                #[cfg(not(feature = "modem"))]
+                let remote_url = &args.remote_url;
+
                 if dry_run {
                     println!("DRY RUN: Not sending message.");
                     return;
@@ -132,21 +154,30 @@ pub async fn run() {
                     Err(e) => eprintln!("Failed to connect to remote server: {}", e),
                 }
             } else {
-                let (session_id, token) = match modem::get_session_info(&args.modem_url).await {
-                    Ok((s, t)) => (s, t),
-                    Err(e) => {
-                        eprintln!("Error getting session info: {}", e);
-                        return;
-                    }
-                };
-                println!("Session ID: {}", session_id);
-                println!("Token: {}", token);
-
-                if let Err(e) =
-                    modem::send_sms(&args.modem_url, &session_id, &token, &to, &message, dry_run)
-                        .await
+                #[cfg(feature = "modem")]
                 {
-                    eprintln!("Error sending SMS: {}", e);
+                    let (session_id, token) = match modem::get_session_info(&args.modem_url).await {
+                        Ok((s, t)) => (s, t),
+                        Err(e) => {
+                            eprintln!("Error getting session info: {}", e);
+                            return;
+                        }
+                    };
+                    println!("Session ID: {}", session_id);
+                    println!("Token: {}", token);
+
+                    if let Err(e) = modem::send_sms(
+                        &args.modem_url,
+                        &session_id,
+                        &token,
+                        &to,
+                        &message,
+                        dry_run,
+                    )
+                    .await
+                    {
+                        eprintln!("Error sending SMS: {}", e);
+                    }
                 }
             }
         }
@@ -158,7 +189,18 @@ pub async fn run() {
             sort_by,
             json,
         } => {
-            let messages = if let Some(remote_url) = args.remote_url {
+            // Determine if we should use remote server
+            #[cfg(feature = "modem")]
+            let use_remote = args.remote_url.is_some();
+            #[cfg(not(feature = "modem"))]
+            let use_remote = true;
+
+            let messages = if use_remote {
+                #[cfg(feature = "modem")]
+                let remote_url = args.remote_url.as_ref().unwrap();
+                #[cfg(not(feature = "modem"))]
+                let remote_url = &args.remote_url;
+
                 let client = reqwest::Client::new();
                 let url = format!("{}/get-sms", remote_url.trim_end_matches('/'));
 
@@ -182,7 +224,7 @@ pub async fn run() {
                                 res.json().await.unwrap_or_default();
                             // The server returns {"status": "success", "messages": [...]}
                             if let Some(msgs_val) = remote_res.get("messages") {
-                                let msgs: Vec<crate::modem::SmsMessage> =
+                                let msgs: Vec<SmsMessage> =
                                     serde_json::from_value(msgs_val.clone()).unwrap_or_default();
                                 msgs
                             } else {
@@ -205,31 +247,36 @@ pub async fn run() {
                     }
                 }
             } else {
-                let (session_id, token) = match modem::get_session_info(&args.modem_url).await {
-                    Ok((s, t)) => (s, t),
-                    Err(e) => {
-                        eprintln!("Error getting session info: {}", e);
-                        return;
-                    }
-                };
-                println!("Session ID: {}", session_id);
-                println!("Token: {}", token);
+                #[cfg(feature = "modem")]
+                {
+                    let (session_id, token) = match modem::get_session_info(&args.modem_url).await {
+                        Ok((s, t)) => (s, t),
+                        Err(e) => {
+                            eprintln!("Error getting session info: {}", e);
+                            return;
+                        }
+                    };
+                    println!("Session ID: {}", session_id);
+                    println!("Token: {}", token);
 
-                let params = modem::SmsListParams {
-                    box_type,
-                    sort_type: sort_by,
-                    read_count: count,
-                    ascending,
-                    unread_preferred,
-                };
+                    let params = modem::SmsListParams {
+                        box_type,
+                        sort_type: sort_by,
+                        read_count: count,
+                        ascending,
+                        unread_preferred,
+                    };
 
-                match modem::get_sms_list(&args.modem_url, &session_id, &token, params).await {
-                    Ok(response) => response.messages.message,
-                    Err(e) => {
-                        eprintln!("Error receiving SMS: {}", e);
-                        return;
+                    match modem::get_sms_list(&args.modem_url, &session_id, &token, params).await {
+                        Ok(response) => response.messages.message,
+                        Err(e) => {
+                            eprintln!("Error receiving SMS: {}", e);
+                            return;
+                        }
                     }
                 }
+                #[cfg(not(feature = "modem"))]
+                unreachable!()
             };
 
             if json {
@@ -298,9 +345,11 @@ pub async fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "modem")]
     use crate::modem;
 
     #[test]
+    #[cfg(feature = "modem")]
     fn test_args_parsing_send_short_flags() {
         let args = Args::try_parse_from([
             "smser",
@@ -329,6 +378,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "modem")]
     fn test_args_parsing_send_long_flags() {
         let args = Args::try_parse_from([
             "smser",
@@ -358,6 +408,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "modem")]
     fn test_args_parsing_receive() {
         let args = Args::try_parse_from([
             "smser",
@@ -397,6 +448,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "modem")]
     fn test_args_parsing_modem_url_env() {
         temp_env::with_var("SMSER_MODEM_URL", Some("http://env-modem:8080"), || {
             let args = Args::try_parse_from(["smser", "send", "-t", "1234567890", "-m", "Hello"])
@@ -406,6 +458,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "modem")]
     fn test_args_parsing_remote_url() {
         let args = Args::try_parse_from([
             "smser",
@@ -425,6 +478,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "modem")]
     fn test_args_parsing_remote_url_env() {
         temp_env::with_var("SMSER_REMOTE_URL", Some("http://env-server:7788"), || {
             let args = Args::try_parse_from(["smser", "send", "-t", "1234567890", "-m", "Hello"])
@@ -506,12 +560,14 @@ mod tests {
     // They verify that the error handling paths are correctly triggered.
 
     #[tokio::test]
+    #[cfg(feature = "modem")]
     async fn test_get_session_info_error() {
         let result = modem::get_session_info("http://nonexistent.com").await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
+    #[cfg(feature = "modem")]
     async fn test_send_sms_dry_run() {
         let result = modem::send_sms(
             "http://nonexistent.com",
@@ -526,6 +582,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "modem")]
     async fn test_send_sms_error() {
         let result = modem::send_sms(
             "http://nonexistent.com",
@@ -540,6 +597,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "modem")]
     async fn test_get_sms_list_error() {
         let params = modem::SmsListParams {
             box_type: BoxType::LocalInbox,

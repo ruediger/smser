@@ -4,6 +4,8 @@ pub mod buildinfo;
 pub mod cli;
 #[cfg(feature = "server")]
 pub mod metrics;
+#[cfg(feature = "modem")]
 pub mod modem;
 #[cfg(feature = "server")]
 pub mod server;
+pub mod types;

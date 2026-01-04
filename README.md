@@ -58,6 +58,33 @@ To build for a Raspberry Pi 5 (running 64-bit OS) from an x86_64 host:
     scp target/aarch64-unknown-linux-gnu/release/smser user@your-pi:/usr/local/bin/
     ```
 
+### Cargo Features
+
+The project has optional features that can be enabled or disabled at build time:
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `modem` | Yes | Direct communication with Huawei E3372 modem |
+| `server` | Yes | Web server with REST API (requires `modem`) |
+| `alertmanager` | Yes | Prometheus AlertManager webhook handler (requires `server`) |
+
+**Build variants:**
+```bash
+cargo build --release                      # Full build (modem + server + alertmanager)
+cargo build --release --no-default-features  # Client-only build
+```
+
+**Client-only mode:** When built without the `modem` feature, the binary can only communicate with a remote smser server. This is useful for machines that don't have the modem attached. The `--remote-url` argument becomes required.
+
+```bash
+# Build client-only binary
+cargo build --release --no-default-features
+
+# Usage (--remote-url is required)
+./smser --remote-url http://smser-server:8080 send --to +441234567890 --message "Hello!"
+./smser --remote-url http://smser-server:8080 receive
+```
+
 ## Usage
 
 ### Command Line Interface

@@ -9,7 +9,7 @@ repository = "https://github.com/ruediger/smser"
 [dependencies]
 clap = { version = "4.5.53", features = ["derive", "env"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-quick-xml = { version = "0.38", features = ["serialize"] }
+quick-xml = { version = "0.38", features = ["serialize"], optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_repr = "0.1"
 strum = { version = "0.26", features = ["derive"] }
@@ -29,8 +29,9 @@ metrics-exporter-prometheus = { version = "0.18.1", default-features = false, op
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
 [features]
-default = ["server", "alertmanager"]
-server = ["dep:axum", "dep:axum-server", "dep:rustls", "dep:tower-http", "dep:metrics", "dep:metrics-exporter-prometheus", "dep:tracing-subscriber"]
+default = ["server", "alertmanager", "modem"]
+modem = ["dep:quick-xml"]
+server = ["modem", "dep:axum", "dep:axum-server", "dep:rustls", "dep:tower-http", "dep:metrics", "dep:metrics-exporter-prometheus", "dep:tracing-subscriber"]
 alertmanager = ["server"]
 
 [dev-dependencies]
