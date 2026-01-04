@@ -1,0 +1,65 @@
+# Tests
+# promtool test rules smserprom_test.yml
+
+rule_files:
+  - smserprom.yml
+
+tests:
+  - name: "SMSERHourlyLimitCritical: Firing"
+    interval: 1m
+    input_series:
+      - series: 'smser_hourly_usage{app="smser", instance="localhost:1234", job="smser"}'
+        values: "0+1x10"
+      - series: 'smser_hourly_limit{app="smser", instance="localhost:1234", job="smser"}'
+        values: "5x10"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SMSERHourlyLimitCritical
+        exp_alerts:
+          - exp_labels:
+              instance: "localhost:1234"
+              job: "smser"
+              app: "smser"
+              severity: "warning"
+            exp_annotations:
+              summary: "SMSER has reached 90% of hourly limit"
+              description: "SMSER (localhost:1234) has reached 90% of the hourly limit"
+  - name: "SMSERHourlyLimitCritical: Not Firing"
+    interval: 1m
+    input_series:
+      - series: 'smser_hourly_usage{app="smser", instance="localhost:1234", job="smser"}'
+        values: "0+1x10"
+      - series: 'smser_hourly_limit{app="smser", instance="localhost:1234", job="smser"}'
+        values: "100x10"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SMSERHourlyLimitCritical
+  - name: "SMSERDailyLimitCritical: Firing"
+    interval: 1m
+    input_series:
+      - series: 'smser_daily_usage{app="smser", instance="localhost:1234", job="smser"}'
+        values: "0+1x10"
+      - series: 'smser_daily_limit{app="smser", instance="localhost:1234", job="smser"}'
+        values: "5x10"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SMSERDailyLimitCritical
+        exp_alerts:
+          - exp_labels:
+              instance: "localhost:1234"
+              job: "smser"
+              app: "smser"
+              severity: "warning"
+            exp_annotations:
+              summary: "SMSER has reached 90% of daily limit"
+              description: "SMSER (localhost:1234) has reached 90% of the daily limit"
+  - name: "SMSERDailyLimitCritical: Not Firing"
+    interval: 1m
+    input_series:
+      - series: 'smser_daily_usage{app="smser", instance="localhost:1234", job="smser"}'
+        values: "0+1x10"
+      - series: 'smser_daily_limit{app="smser", instance="localhost:1234", job="smser"}'
+        values: "100x10"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SMSERDailyLimitCritical

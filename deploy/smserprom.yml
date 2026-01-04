@@ -1,0 +1,22 @@
+# Prometheus Rules for SMSER
+
+groups:
+  - name: "smser_5m"
+    interval: 5m
+    rules:
+      - alert: SMSERHourlyLimitCritical
+        expr: smser_hourly_usage > smser_hourly_limit * 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SMSER has reached 90% of hourly limit"
+          description: "SMSER ({{ $labels.instance }}) has reached 90% of the hourly limit"
+      - alert: SMSERDailyLimitCritical
+        expr: smser_daily_usage > smser_daily_limit * 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SMSER has reached 90% of daily limit"
+          description: "SMSER ({{ $labels.instance }}) has reached 90% of the daily limit"
