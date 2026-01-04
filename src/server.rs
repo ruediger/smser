@@ -443,8 +443,8 @@ async fn send_sms_handler(
 
     if state.log_sensitive {
         info!(
-            "Received request to send SMS to {} (client: {:?})",
-            payload.to, payload.client
+            "Received request to send SMS to {} (client: {:?}): {:?}",
+            payload.to, payload.client, payload.message
         );
     } else {
         info!(
@@ -568,7 +568,7 @@ async fn alertmanager_handler(
     match modem::send_sms(&state.modem_url, &session_id, &token, to, &message, false).await {
         Ok(_) => {
             if state.log_sensitive {
-                info!("Alert SMS sent successfully to {}", to);
+                info!("Alert SMS sent successfully to {}: {:?}", to, message);
             } else {
                 info!("Alert SMS sent successfully");
             }
