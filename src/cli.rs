@@ -163,8 +163,6 @@ pub async fn run() {
                             return;
                         }
                     };
-                    println!("Session ID: {}", session_id);
-                    println!("Token: {}", token);
 
                     if let Err(e) = modem::send_sms(
                         &args.modem_url,
@@ -256,8 +254,6 @@ pub async fn run() {
                             return;
                         }
                     };
-                    println!("Session ID: {}", session_id);
-                    println!("Token: {}", token);
 
                     let params = modem::SmsListParams {
                         box_type,
