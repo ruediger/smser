@@ -51,6 +51,15 @@ pub struct RateLimitStatus {
     pub daily_limit: u32,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ClientRateLimitStatus {
+    pub name: String,
+    pub hourly_usage: u32,
+    pub hourly_limit: u32,
+    pub daily_usage: u32,
+    pub daily_limit: u32,
+}
+
 #[derive(Clone, Debug)]
 pub struct RateLimiter {
     hourly_limit: u32,
@@ -208,6 +217,32 @@ impl RateLimiter {
             daily_usage: state.daily_count,
             daily_limit: self.daily_limit,
         }
+    }
+
+    /// Returns status for all configured clients
+    pub fn get_client_status(&self) -> Vec<ClientRateLimitStatus> {
+        let mut state = self.state.lock().unwrap();
+
+        self.client_limits
+            .iter()
+            .map(|(name, &(hourly_limit, daily_limit))| {
+                let (hourly_usage, daily_usage) =
+                    if let Some(client_state) = state.client_state.get_mut(name) {
+                        client_state.update();
+                        (client_state.hourly_count, client_state.daily_count)
+                    } else {
+                        (0, 0)
+                    };
+
+                ClientRateLimitStatus {
+                    name: name.clone(),
+                    hourly_usage,
+                    hourly_limit,
+                    daily_usage,
+                    daily_limit,
+                }
+            })
+            .collect()
     }
 }
 

@@ -51,6 +51,7 @@ struct AppState {
     #[cfg(feature = "alertmanager")]
     alert_phone_number: Option<String>,
     start_time: Instant,
+    tls_enabled: bool,
 }
 
 use tokio::sync::oneshot; // New import
@@ -78,6 +79,7 @@ pub async fn start_server(
     // Set the version info metric
     gauge!("smser_version_info", "version" => buildinfo::version(), "git_hash" => buildinfo::git_hash()).set(1.0);
 
+    let tls_enabled = config.tls_cert.is_some() && config.tls_key.is_some();
     let app_state = AppState {
         modem_url: config.modem_url.clone(),
         rate_limiter: config.rate_limiter,
@@ -85,6 +87,7 @@ pub async fn start_server(
         #[cfg(feature = "alertmanager")]
         alert_phone_number: config.alert_phone_number,
         start_time,
+        tls_enabled,
     };
 
     let app = Router::new()
@@ -304,8 +307,55 @@ async fn metrics_handler(State(state): State<AppState>) -> String {
 async fn status_handler(State(state): State<AppState>) -> Html<String> {
     counter!("smser_http_requests_total", "endpoint" => "/status").increment(1);
     let status = state.rate_limiter.get_status();
+    let client_status = state.rate_limiter.get_client_status();
     let uptime = state.start_time.elapsed();
     let uptime_str = format_uptime(uptime);
+
+    // Build client limits HTML
+    let client_limits_html = if client_status.is_empty() {
+        String::from("<p>No per-client limits configured</p>")
+    } else {
+        let mut html = String::from(
+            r#"<table style="width: 100%; border-collapse: collapse;">
+            <tr style="border-bottom: 1px solid #ddd;">
+                <th style="text-align: left; padding: 0.5rem;">Client</th>
+                <th style="text-align: right; padding: 0.5rem;">Hourly</th>
+                <th style="text-align: right; padding: 0.5rem;">Daily</th>
+            </tr>"#,
+        );
+        for cs in &client_status {
+            html.push_str(&format!(
+                r#"<tr style="border-bottom: 1px solid #eee;">
+                <td style="padding: 0.5rem;">{}</td>
+                <td style="text-align: right; padding: 0.5rem;">{} / {}</td>
+                <td style="text-align: right; padding: 0.5rem;">{} / {}</td>
+            </tr>"#,
+                html_escape(&cs.name),
+                cs.hourly_usage,
+                cs.hourly_limit,
+                cs.daily_usage,
+                cs.daily_limit
+            ));
+        }
+        html.push_str("</table>");
+        html
+    };
+
+    // Build alert recipient HTML (only if alertmanager feature is enabled)
+    #[cfg(feature = "alertmanager")]
+    let alert_html = match &state.alert_phone_number {
+        Some(phone) => format!(
+            r#"<div class="stat"><span class="label">Alert Recipient:</span> {}</div>"#,
+            html_escape(phone)
+        ),
+        None => String::from(
+            r#"<div class="stat"><span class="label">Alert Recipient:</span> <em>Not configured</em></div>"#,
+        ),
+    };
+    #[cfg(not(feature = "alertmanager"))]
+    let alert_html = String::new();
+
+    let tls_status = if state.tls_enabled { "Enabled" } else { "Disabled" };
 
     let html = format!(
         r#"<!DOCTYPE html>
@@ -313,38 +363,48 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
 <head>
     <title>SMS Server Status</title>
     <style>
-        body {{ font-family: sans-serif; margin: 2rem; }}
+        body {{ font-family: sans-serif; margin: 2rem; background: #f5f5f5; }}
         h1 {{ color: #333; }}
-        .card {{ border: 1px solid #ddd; padding: 1rem; border-radius: 4px; margin-bottom: 1rem; }}
+        .card {{ background: white; border: 1px solid #ddd; padding: 1rem; border-radius: 4px; margin-bottom: 1rem; }}
         .stat {{ margin: 0.5rem 0; }}
         .label {{ font-weight: bold; }}
+        h2 {{ margin-top: 0; color: #555; font-size: 1.1rem; }}
     </style>
 </head>
 <body>
     <h1>SMS Server Status</h1>
     <div class="card">
         <h2>Configuration</h2>
-        <div class="stat"><span class="label">Version:</span> {}</div>
-        <div class="stat"><span class="label">Modem URL:</span> {}</div>
+        <div class="stat"><span class="label">Version:</span> {version}</div>
+        <div class="stat"><span class="label">Modem URL:</span> {modem_url}</div>
+        <div class="stat"><span class="label">TLS:</span> {tls_status}</div>
+        {alert_html}
     </div>
     <div class="card">
         <h2>Status</h2>
-        <div class="stat"><span class="label">Uptime:</span> {}</div>
+        <div class="stat"><span class="label">Uptime:</span> {uptime}</div>
     </div>
     <div class="card">
-        <h2>Rate Limits</h2>
-        <div class="stat"><span class="label">Hourly Usage:</span> {} / {}</div>
-        <div class="stat"><span class="label">Daily Usage:</span> {} / {}</div>
+        <h2>Global Rate Limits</h2>
+        <div class="stat"><span class="label">Hourly Usage:</span> {hourly_usage} / {hourly_limit}</div>
+        <div class="stat"><span class="label">Daily Usage:</span> {daily_usage} / {daily_limit}</div>
+    </div>
+    <div class="card">
+        <h2>Per-Client Rate Limits</h2>
+        {client_limits_html}
     </div>
 </body>
 </html>"#,
-        html_escape(&buildinfo::version_full()),
-        html_escape(&state.modem_url),
-        uptime_str,
-        status.hourly_usage,
-        status.hourly_limit,
-        status.daily_usage,
-        status.daily_limit
+        version = html_escape(&buildinfo::version_full()),
+        modem_url = html_escape(&state.modem_url),
+        tls_status = tls_status,
+        alert_html = alert_html,
+        uptime = uptime_str,
+        hourly_usage = status.hourly_usage,
+        hourly_limit = status.hourly_limit,
+        daily_usage = status.daily_usage,
+        daily_limit = status.daily_limit,
+        client_limits_html = client_limits_html
     );
     Html(html)
 }
