@@ -127,6 +127,11 @@ pub fn setup_metrics() -> PrometheusHandle {
             );
             describe_gauge!("smser_daily_usage", Unit::Count, "Current daily SMS usage");
             describe_gauge!(
+                "smser_sms_stored",
+                Unit::Count,
+                "Number of SMS messages stored on the SIM"
+            );
+            describe_gauge!(
                 "smser_start_time_seconds",
                 Unit::Seconds,
                 "Start time of the server in Unix seconds"

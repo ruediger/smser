@@ -544,9 +544,12 @@ async fn get_sms_handler(
     };
 
     match modem::get_sms_list(&state.modem_url, &session_id, &token, sms_params).await {
-        Ok(response) => Ok(Json(
-            serde_json::json!({"status": "success", "messages": response.messages.message}),
-        )),
+        Ok(response) => {
+            gauge!("smser_sms_stored").set(response.count as f64);
+            Ok(Json(
+                serde_json::json!({"status": "success", "messages": response.messages.message}),
+            ))
+        }
         Err(e) => {
             error!("Error receiving SMS: {}", e);
             let status = match e {
