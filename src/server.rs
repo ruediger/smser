@@ -28,6 +28,9 @@ use tracing::{error, info};
 pub struct SendSmsRequest {
     pub to: String,
     pub message: String,
+    /// Optional client name for per-client rate limiting
+    #[serde(default)]
+    pub client: Option<String>,
 }
 
 pub struct ServerConfig {
@@ -370,10 +373,16 @@ async fn send_sms_handler(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     counter!("smser_http_requests_total", "endpoint" => "/send-sms").increment(1);
 
-    info!("Received request to send SMS to {}", payload.to);
+    info!(
+        "Received request to send SMS to {} (client: {:?})",
+        payload.to, payload.client
+    );
 
     // Check rate limit
-    if let Err(e) = state.rate_limiter.check_and_increment() {
+    if let Err(e) = state
+        .rate_limiter
+        .check_and_increment(payload.client.as_deref())
+    {
         error!("Rate limit exceeded: {}", e);
         return Err((
             StatusCode::TOO_MANY_REQUESTS,
@@ -450,8 +459,11 @@ async fn alertmanager_handler(
 
     let message = alertmanager::format_alert_message(&payload);
 
-    // Check rate limit
-    if let Err(e) = state.rate_limiter.check_and_increment() {
+    // Check rate limit (use "alertmanager" as client name for per-client limits)
+    if let Err(e) = state
+        .rate_limiter
+        .check_and_increment(Some("alertmanager"))
+    {
         error!("Rate limit exceeded for alert SMS: {}", e);
         return Err((
             StatusCode::TOO_MANY_REQUESTS,
@@ -583,7 +595,7 @@ mod tests {
         // Spawn the server in a background task
         let server_handle = tokio::spawn(async move {
             let handle = setup_metrics();
-            let rate_limiter = RateLimiter::new(100, 1000);
+            let rate_limiter = RateLimiter::new(100, 1000, vec![]);
             let config = ServerConfig {
                 modem_url,
                 prometheus_handle: handle,
@@ -625,7 +637,7 @@ mod tests {
         let server_handle = tokio::spawn(async move {
             let handle = setup_metrics();
             crate::metrics::update_limits_metrics(100, 1000);
-            let rate_limiter = RateLimiter::new(100, 1000);
+            let rate_limiter = RateLimiter::new(100, 1000, vec![]);
             let config = ServerConfig {
                 modem_url,
                 prometheus_handle: handle,
@@ -670,7 +682,7 @@ mod tests {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let server_handle = tokio::spawn(async move {
             let handle = setup_metrics();
-            let rate_limiter = RateLimiter::new(100, 1000);
+            let rate_limiter = RateLimiter::new(100, 1000, vec![]);
             let config = ServerConfig {
                 modem_url,
                 prometheus_handle: handle,
@@ -712,7 +724,7 @@ mod tests {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let server_handle = tokio::spawn(async move {
             let handle = setup_metrics();
-            let rate_limiter = RateLimiter::new(100, 1000);
+            let rate_limiter = RateLimiter::new(100, 1000, vec![]);
             let config = ServerConfig {
                 modem_url,
                 prometheus_handle: handle,
@@ -773,7 +785,7 @@ mod tests {
         // Spawn the server in a background task
         let server_handle = tokio::spawn(async move {
             let handle = setup_metrics();
-            let rate_limiter = RateLimiter::new(100, 1000);
+            let rate_limiter = RateLimiter::new(100, 1000, vec![]);
             let config = ServerConfig {
                 modem_url,
                 prometheus_handle: handle,
@@ -834,7 +846,7 @@ mod tests {
         // Spawn the server in a background task
         let server_handle = tokio::spawn(async move {
             let handle = setup_metrics();
-            let rate_limiter = RateLimiter::new(100, 1000);
+            let rate_limiter = RateLimiter::new(100, 1000, vec![]);
             let config = ServerConfig {
                 modem_url,
                 prometheus_handle: handle,

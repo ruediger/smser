@@ -1,5 +1,7 @@
 #[cfg(feature = "server")]
-use crate::metrics::{RateLimiter, setup_metrics, update_limits_metrics};
+use crate::metrics::{
+    ClientLimit, RateLimiter, setup_metrics, update_client_limits_metrics, update_limits_metrics,
+};
 #[cfg(feature = "modem")]
 use crate::modem;
 use crate::types::{BoxType, SmsMessage, SortType};
@@ -52,6 +54,10 @@ pub enum SmsCommand {
         /// Do not actually send a message
         #[arg(long)]
         dry_run: bool,
+
+        /// Client name for per-client rate limiting
+        #[arg(long)]
+        client: Option<String>,
     },
     /// Receive SMS messages
     Receive {
@@ -99,6 +105,10 @@ pub enum SmsCommand {
         #[arg(long, default_value_t = 1000)]
         daily_limit: u32,
 
+        /// Per-client rate limit in format "name:hourly:daily" (can be repeated)
+        #[arg(long = "client-limit", value_parser = parse_client_limit)]
+        client_limits: Vec<ClientLimit>,
+
         /// Path to TLS certificate file
         #[arg(long)]
         tls_cert: Option<std::path::PathBuf>,
@@ -109,6 +119,11 @@ pub enum SmsCommand {
     },
 }
 
+#[cfg(feature = "server")]
+fn parse_client_limit(s: &str) -> Result<ClientLimit, String> {
+    ClientLimit::parse(s)
+}
+
 pub async fn run() {
     let args = Args::parse();
 
@@ -117,6 +132,7 @@ pub async fn run() {
             to,
             message,
             dry_run,
+            client,
         } => {
             // Determine if we should use remote server
             #[cfg(feature = "modem")]
@@ -134,14 +150,15 @@ pub async fn run() {
                     println!("DRY RUN: Not sending message.");
                     return;
                 }
-                let client = reqwest::Client::new();
+                let http_client = reqwest::Client::new();
                 let url = format!("{}/send-sms", remote_url.trim_end_matches('/'));
                 let payload = serde_json::json!({
                     "to": to,
-                    "message": message
+                    "message": message,
+                    "client": client
                 });
 
-                match client.post(&url).json(&payload).send().await {
+                match http_client.post(&url).json(&payload).send().await {
                     Ok(res) => {
                         if res.status().is_success() {
                             println!("SMS sent successfully via remote server!");
@@ -301,6 +318,7 @@ pub async fn run() {
             alert_to,
             hourly_limit,
             daily_limit,
+            client_limits,
             tls_cert,
             tls_key,
         } => {
@@ -314,10 +332,21 @@ pub async fn run() {
 
             // Call server start function here
             println!("Starting server on port {}", port);
+            if !client_limits.is_empty() {
+                println!(
+                    "Per-client limits: {}",
+                    client_limits
+                        .iter()
+                        .map(|cl| format!("{}:{}/{}", cl.name, cl.hourly_limit, cl.daily_limit))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
 
             let handle = setup_metrics();
             update_limits_metrics(hourly_limit, daily_limit);
-            let rate_limiter = RateLimiter::new(hourly_limit, daily_limit);
+            update_client_limits_metrics(&client_limits);
+            let rate_limiter = RateLimiter::new(hourly_limit, daily_limit, client_limits);
 
             let addr = SocketAddr::from(([0, 0, 0, 0], port));
             let listener = TcpListener::bind(&addr)
@@ -364,6 +393,7 @@ mod tests {
                 to,
                 message,
                 dry_run,
+                ..
             } => {
                 assert_eq!(to, "1234567890");
                 assert_eq!(message, "Hello, world!");
@@ -394,6 +424,7 @@ mod tests {
                 to,
                 message,
                 dry_run,
+                ..
             } => {
                 assert_eq!(to, "1234567890");
                 assert_eq!(message, "Hello, world!");

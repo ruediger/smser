@@ -132,13 +132,41 @@ When running in server mode (`smser serve`), the following endpoints are availab
     ```
 *   **Rate Limits**: Configurable via `--hourly-limit` (default 100) and `--daily-limit` (default 1000).
 
+#### Per-Client Rate Limiting
+
+You can configure individual rate limits for specific clients. This is useful when different scripts or services need their own quotas.
+
+```bash
+# Server with per-client limits
+smser serve --hourly-limit 100 --daily-limit 1000 \
+  --client-limit networkfailover:5:20 \
+  --client-limit monitoring:10:50
+
+# Client identifies itself when sending
+smser send --to +441234567890 --message "Network failed over" --client networkfailover
+```
+
+Via the API, include the `client` field in the request:
+```json
+{"to": "+441234567890", "message": "Hello", "client": "networkfailover"}
+```
+
+**Notes:**
+- Named clients count against both their own limit AND the global limit
+- Unknown clients (no `--client`) use only global limits
+- AlertManager webhook automatically uses client name "alertmanager"
+
 ## Monitoring
 
 The `/metrics` endpoint exports the following Prometheus metrics:
 *   `smser_sms_sent_total`: Total SMS sent.
+*   `smser_sms_stored`: Number of SMS messages stored on the SIM.
 *   `smser_sms_country_total`: Total SMS sent by destination country code.
 *   `smser_http_requests_total`: HTTP request counts by endpoint.
-*   `smser_hourly_usage` / `smser_daily_usage`: Current usage against limits.
+*   `smser_hourly_usage` / `smser_daily_usage`: Current global usage.
+*   `smser_hourly_limit` / `smser_daily_limit`: Configured global limits.
+*   `smser_client_hourly_usage{client="X"}` / `smser_client_daily_usage{client="X"}`: Per-client usage.
+*   `smser_client_hourly_limit{client="X"}` / `smser_client_daily_limit{client="X"}`: Per-client limits.
 
 ## License
 
