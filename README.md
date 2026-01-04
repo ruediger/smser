@@ -12,7 +12,7 @@ There is no authentication if you run this in server mode. Anyone with access to
 
 The Huawei E3372 USB modem uses a web based interface without TLS support. All communication with it is in plain text, but should stay within the local host/modem.
 
-Also the code is mostly written by AI (Gemini CLI using Gemini 2.5 and 3.0 models).
+Also the code is mostly written by AI (Gemini CLI using Gemini 2.5 and 3.0 models, as well as Claude Code 4.5).
 
 ## Features
 
