@@ -120,7 +120,7 @@ When running in server mode (`smser serve`), the following endpoints are availab
     *   Params: `count` (default 20), `box_type` (default LocalInbox).
 *   **`GET /metrics`**: Prometheus metrics endpoint.
 *   **`GET /status`**: HTML status dashboard.
-*   **`POST /alertmanager`**: Prometheus Alert Manager webhook handler.
+*   **`POST /alertmanager`**: Prometheus Alert Manager [webhook handler](https://prometheus.io/docs/alerting/latest/configuration/#webhook_config).
     *   Accepts standard Alert Manager JSON.
     *   Formats and sends alerts as SMS to the number configured via `--alert-to`.
 
