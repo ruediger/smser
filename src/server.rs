@@ -41,6 +41,8 @@ pub struct ServerConfig {
     pub alert_phone_number: Option<String>,
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
+    /// Whether to log sensitive data (phone numbers, message content)
+    pub log_sensitive: bool,
 }
 
 #[derive(Clone)]
@@ -52,6 +54,7 @@ struct AppState {
     alert_phone_number: Option<String>,
     start_time: Instant,
     tls_enabled: bool,
+    log_sensitive: bool,
 }
 
 use tokio::sync::oneshot; // New import
@@ -88,6 +91,7 @@ pub async fn start_server(
         alert_phone_number: config.alert_phone_number,
         start_time,
         tls_enabled,
+        log_sensitive: config.log_sensitive,
     };
 
     let app = Router::new()
@@ -437,10 +441,17 @@ async fn send_sms_handler(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     counter!("smser_http_requests_total", "endpoint" => "/send-sms").increment(1);
 
-    info!(
-        "Received request to send SMS to {} (client: {:?})",
-        payload.to, payload.client
-    );
+    if state.log_sensitive {
+        info!(
+            "Received request to send SMS to {} (client: {:?})",
+            payload.to, payload.client
+        );
+    } else {
+        info!(
+            "Received request to send SMS (client: {:?})",
+            payload.client
+        );
+    }
 
     // Check rate limit
     if let Err(e) = state
@@ -476,7 +487,18 @@ async fn send_sms_handler(
     .await
     {
         Ok(_) => {
-            info!("SMS sent successfully to {} (client: {})", payload.to, payload.client.unwrap_or("no client".to_string()));
+            if state.log_sensitive {
+                info!(
+                    "SMS sent successfully to {} (client: {})",
+                    payload.to,
+                    payload.client.as_deref().unwrap_or("none")
+                );
+            } else {
+                info!(
+                    "SMS sent successfully (client: {})",
+                    payload.client.as_deref().unwrap_or("none")
+                );
+            }
             counter!("smser_sms_sent_total").increment(1);
             let country_code = extract_country_code(&payload.to);
             counter!("smser_sms_country_total", "country_code" => country_code).increment(1);
@@ -545,7 +567,11 @@ async fn alertmanager_handler(
 
     match modem::send_sms(&state.modem_url, &session_id, &token, to, &message, false).await {
         Ok(_) => {
-            info!("Alert SMS sent successfully to {}", to);
+            if state.log_sensitive {
+                info!("Alert SMS sent successfully to {}", to);
+            } else {
+                info!("Alert SMS sent successfully");
+            }
             counter!("smser_sms_sent_total").increment(1);
             let country_code = extract_country_code(to);
             counter!("smser_sms_country_total", "country_code" => country_code).increment(1);
@@ -665,6 +691,7 @@ mod tests {
                 alert_phone_number: None,
                 tls_cert: None,
                 tls_key: None,
+                log_sensitive: true,
             };
             start_server(listener, rx, config).await;
         });
@@ -707,6 +734,7 @@ mod tests {
                 alert_phone_number: None,
                 tls_cert: None,
                 tls_key: None,
+                log_sensitive: true,
             };
             start_server(listener, rx, config).await;
         });
@@ -752,6 +780,7 @@ mod tests {
                 alert_phone_number: None,
                 tls_cert: None,
                 tls_key: None,
+                log_sensitive: true,
             };
             start_server(listener, rx, config).await;
         });
@@ -793,6 +822,7 @@ mod tests {
                 alert_phone_number: Some("+441234567890".to_string()),
                 tls_cert: None,
                 tls_key: None,
+                log_sensitive: true,
             };
             start_server(listener, rx, config).await;
         });
@@ -855,6 +885,7 @@ mod tests {
                 alert_phone_number: None,
                 tls_cert: None,
                 tls_key: None,
+                log_sensitive: true,
             };
             start_server(listener, rx, config).await;
         });
@@ -916,6 +947,7 @@ mod tests {
                 alert_phone_number: None,
                 tls_cert: Some(cert_path_clone),
                 tls_key: Some(key_path_clone),
+                log_sensitive: true,
             };
             start_server(listener, rx, config).await;
         });

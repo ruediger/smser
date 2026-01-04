@@ -116,6 +116,10 @@ pub enum SmsCommand {
         /// Path to TLS key file
         #[arg(long)]
         tls_key: Option<std::path::PathBuf>,
+
+        /// Log sensitive data (phone numbers, message content) - disable for privacy
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        log_sensitive: bool,
     },
 }
 
@@ -328,6 +332,7 @@ pub async fn run() {
             client_limits,
             tls_cert,
             tls_key,
+            log_sensitive,
         } => {
             tracing_subscriber::registry()
                 .with(tracing_subscriber::EnvFilter::new(
@@ -368,6 +373,7 @@ pub async fn run() {
                 alert_phone_number: alert_to,
                 tls_cert,
                 tls_key,
+                log_sensitive,
             };
             crate::server::start_server(listener, rx, config).await;
         }
