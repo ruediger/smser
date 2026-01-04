@@ -355,7 +355,11 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
     #[cfg(not(feature = "alertmanager"))]
     let alert_html = String::new();
 
-    let tls_status = if state.tls_enabled { "Enabled" } else { "Disabled" };
+    let tls_status = if state.tls_enabled {
+        "Enabled"
+    } else {
+        "Disabled"
+    };
 
     let html = format!(
         r#"<!DOCTYPE html>
@@ -520,10 +524,7 @@ async fn alertmanager_handler(
     let message = alertmanager::format_alert_message(&payload);
 
     // Check rate limit (use "alertmanager" as client name for per-client limits)
-    if let Err(e) = state
-        .rate_limiter
-        .check_and_increment(Some("alertmanager"))
-    {
+    if let Err(e) = state.rate_limiter.check_and_increment(Some("alertmanager")) {
         error!("Rate limit exceeded for alert SMS: {}", e);
         return Err((
             StatusCode::TOO_MANY_REQUESTS,

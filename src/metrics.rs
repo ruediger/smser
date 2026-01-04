@@ -327,8 +327,7 @@ pub fn update_client_limits_metrics(client_limits: &[ClientLimit]) {
     for cl in client_limits {
         gauge!("smser_client_hourly_limit", "client" => cl.name.clone())
             .set(cl.hourly_limit as f64);
-        gauge!("smser_client_daily_limit", "client" => cl.name.clone())
-            .set(cl.daily_limit as f64);
+        gauge!("smser_client_daily_limit", "client" => cl.name.clone()).set(cl.daily_limit as f64);
     }
 }
 
@@ -370,9 +369,11 @@ mod tests {
         assert!(limiter.check_and_increment(Some("test_client")).is_ok());
         let result = limiter.check_and_increment(Some("test_client"));
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("Client 'test_client' hourly limit of 2 reached"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Client 'test_client' hourly limit of 2 reached")
+        );
 
         // Unknown client uses global limits
         assert!(limiter.check_and_increment(Some("unknown_client")).is_ok());
