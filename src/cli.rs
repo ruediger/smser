@@ -181,7 +181,7 @@ pub async fn run() {
                         }
                     };
 
-                    if let Err(e) = modem::send_sms(
+                    match modem::send_sms(
                         &args.modem_url,
                         &session_id,
                         &token,
@@ -191,7 +191,14 @@ pub async fn run() {
                     )
                     .await
                     {
-                        eprintln!("Error sending SMS: {}", e);
+                        Ok(()) => {
+                            if dry_run {
+                                println!("DRY RUN: Not sending message.");
+                            } else {
+                                println!("SMS sent successfully!");
+                            }
+                        }
+                        Err(e) => eprintln!("Error sending SMS: {}", e),
                     }
                 }
             }

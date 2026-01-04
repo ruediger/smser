@@ -266,7 +266,6 @@ pub async fn send_sms(
     let cookie = format!("SessionID={}", session_id);
 
     if dry_run {
-        println!("DRY RUN: Not sending message.");
         Ok(())
     } else {
         let response = client
@@ -282,7 +281,6 @@ pub async fn send_sms(
         let response_text = response.text().await?;
 
         if response_text.contains("<response>OK</response>") {
-            println!("SMS sent successfully!");
             Ok(())
         } else {
             let error_response: Result<ModemErrorResponse, _> = from_str(&response_text);

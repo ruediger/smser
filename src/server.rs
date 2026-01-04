@@ -476,7 +476,7 @@ async fn send_sms_handler(
     .await
     {
         Ok(_) => {
-            info!("SMS sent successfully to {}", payload.to);
+            info!("SMS sent successfully to {} (client: {})", payload.to, payload.client.unwrap_or("no client".to_string()));
             counter!("smser_sms_sent_total").increment(1);
             let country_code = extract_country_code(&payload.to);
             counter!("smser_sms_country_total", "country_code" => country_code).increment(1);
