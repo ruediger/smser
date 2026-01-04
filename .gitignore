@@ -1,2 +1,6 @@
 /target
 deploy.sh
+
+# AI assistant context files
+CLAUDE.md
+GEMINI.md
