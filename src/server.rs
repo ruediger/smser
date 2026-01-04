@@ -76,7 +76,7 @@ pub async fn start_server(
     gauge!("smser_start_time_seconds").set(start_timestamp);
 
     // Set the version info metric
-    gauge!("smser_version_info", "version" => buildinfo::version()).set(1.0);
+    gauge!("smser_version_info", "version" => buildinfo::version(), "git_hash" => buildinfo::git_hash()).set(1.0);
 
     let app_state = AppState {
         modem_url: config.modem_url.clone(),
@@ -282,7 +282,7 @@ async fn handler() -> Html<String> {
     </script>
 </body>
 </html>"#,
-        html_escape(buildinfo::version()),
+        html_escape(&buildinfo::version_full()),
         html_escape(buildinfo::repository())
     );
     Html(html.to_string())
@@ -338,7 +338,7 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
     </div>
 </body>
 </html>"#,
-        html_escape(buildinfo::version()),
+        html_escape(&buildinfo::version_full()),
         html_escape(&state.modem_url),
         uptime_str,
         status.hourly_usage,
