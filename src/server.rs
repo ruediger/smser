@@ -41,6 +41,8 @@ pub struct ServerConfig {
     pub alert_phone_number: Option<String>,
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
+    /// Port for HTTP to HTTPS redirect (only used when TLS is enabled)
+    pub http_redirect_port: Option<u16>,
     /// Whether to log sensitive data (phone numbers, message content)
     pub log_sensitive: bool,
 }
@@ -112,9 +114,44 @@ pub async fn start_server(
     println!("listening on {}", addr);
 
     if let (Some(cert), Some(key)) = (config.tls_cert, config.tls_key) {
-        let config = RustlsConfig::from_pem_file(cert, key)
+        let tls_config = RustlsConfig::from_pem_file(cert, key)
             .await
             .expect("Failed to load TLS certificate and key");
+
+        // Start HTTP redirect server if configured
+        if let Some(http_port) = config.http_redirect_port {
+            let https_port = addr.port();
+            tokio::spawn(async move {
+                let redirect_app = Router::new().fallback(move |req: axum::extract::Request| {
+                    async move {
+                        let host = req
+                            .headers()
+                            .get("host")
+                            .and_then(|h| h.to_str().ok())
+                            .unwrap_or("localhost");
+                        // Remove port from host if present
+                        let host_without_port = host.split(':').next().unwrap_or(host);
+                        let path = req
+                            .uri()
+                            .path_and_query()
+                            .map(|p| p.as_str())
+                            .unwrap_or("/");
+                        let redirect_url =
+                            format!("https://{}:{}{}", host_without_port, https_port, path);
+                        axum::response::Redirect::permanent(&redirect_url)
+                    }
+                });
+                let redirect_addr = std::net::SocketAddr::from(([0, 0, 0, 0], http_port));
+                let redirect_listener = tokio::net::TcpListener::bind(&redirect_addr)
+                    .await
+                    .expect("Failed to bind HTTP redirect port");
+                println!(
+                    "HTTP redirect listening on {} -> HTTPS port {}",
+                    http_port, https_port
+                );
+                axum::serve(redirect_listener, redirect_app).await.unwrap();
+            });
+        }
 
         let handle = Handle::new();
         let handle_clone = handle.clone();
@@ -123,7 +160,7 @@ pub async fn start_server(
             handle_clone.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
         });
 
-        axum_server::from_tcp_rustls(listener.into_std().unwrap(), config)
+        axum_server::from_tcp_rustls(listener.into_std().unwrap(), tls_config)
             .handle(handle)
             .serve(app.into_make_service())
             .await
@@ -691,6 +728,7 @@ mod tests {
                 alert_phone_number: None,
                 tls_cert: None,
                 tls_key: None,
+                http_redirect_port: None,
                 log_sensitive: true,
             };
             start_server(listener, rx, config).await;
@@ -734,6 +772,7 @@ mod tests {
                 alert_phone_number: None,
                 tls_cert: None,
                 tls_key: None,
+                http_redirect_port: None,
                 log_sensitive: true,
             };
             start_server(listener, rx, config).await;
@@ -780,6 +819,7 @@ mod tests {
                 alert_phone_number: None,
                 tls_cert: None,
                 tls_key: None,
+                http_redirect_port: None,
                 log_sensitive: true,
             };
             start_server(listener, rx, config).await;
@@ -822,6 +862,7 @@ mod tests {
                 alert_phone_number: Some("+441234567890".to_string()),
                 tls_cert: None,
                 tls_key: None,
+                http_redirect_port: None,
                 log_sensitive: true,
             };
             start_server(listener, rx, config).await;
@@ -885,6 +926,7 @@ mod tests {
                 alert_phone_number: None,
                 tls_cert: None,
                 tls_key: None,
+                http_redirect_port: None,
                 log_sensitive: true,
             };
             start_server(listener, rx, config).await;
@@ -947,6 +989,7 @@ mod tests {
                 alert_phone_number: None,
                 tls_cert: Some(cert_path_clone),
                 tls_key: Some(key_path_clone),
+                http_redirect_port: None,
                 log_sensitive: true,
             };
             start_server(listener, rx, config).await;

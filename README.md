@@ -132,6 +132,22 @@ When running in server mode (`smser serve`), the following endpoints are availab
     ```
 *   **Rate Limits**: Configurable via `--hourly-limit` (default 100) and `--daily-limit` (default 1000).
 
+#### TLS Configuration
+
+The server supports TLS for secure HTTPS connections:
+
+```bash
+smser serve --port 443 --tls-cert /path/to/cert.pem --tls-key /path/to/key.pem
+```
+
+When TLS is enabled, you can optionally start an HTTP redirect server on a separate port:
+
+```bash
+smser serve --port 443 --tls-cert cert.pem --tls-key key.pem --http-redirect-port 80
+```
+
+This will redirect all HTTP requests on port 80 to HTTPS on port 443.
+
 #### Per-Client Rate Limiting
 
 You can configure individual rate limits for specific clients. This is useful when different scripts or services need their own quotas.

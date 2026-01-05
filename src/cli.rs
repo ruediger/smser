@@ -117,6 +117,10 @@ pub enum SmsCommand {
         #[arg(long)]
         tls_key: Option<std::path::PathBuf>,
 
+        /// Port for HTTP to HTTPS redirect (only used when TLS is enabled)
+        #[arg(long)]
+        http_redirect_port: Option<u16>,
+
         /// Log sensitive data (phone numbers, message content) - disable for privacy
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         log_sensitive: bool,
@@ -332,6 +336,7 @@ pub async fn run() {
             client_limits,
             tls_cert,
             tls_key,
+            http_redirect_port,
             log_sensitive,
         } => {
             tracing_subscriber::registry()
@@ -373,6 +378,7 @@ pub async fn run() {
                 alert_phone_number: alert_to,
                 tls_cert,
                 tls_key,
+                http_redirect_port,
                 log_sensitive,
             };
             crate::server::start_server(listener, rx, config).await;
