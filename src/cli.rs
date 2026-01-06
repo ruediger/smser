@@ -121,6 +121,10 @@ pub enum SmsCommand {
         #[arg(long)]
         http_redirect_port: Option<u16>,
 
+        /// Hostname to use for HTTPS redirects (defaults to request Host header)
+        #[arg(long)]
+        redirect_host: Option<String>,
+
         /// Log sensitive data (phone numbers, message content) - disable for privacy
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         log_sensitive: bool,
@@ -337,6 +341,7 @@ pub async fn run() {
             tls_cert,
             tls_key,
             http_redirect_port,
+            redirect_host,
             log_sensitive,
         } => {
             tracing_subscriber::registry()
@@ -379,6 +384,7 @@ pub async fn run() {
                 tls_cert,
                 tls_key,
                 http_redirect_port,
+                redirect_host,
                 log_sensitive,
             };
             crate::server::start_server(listener, rx, config).await;

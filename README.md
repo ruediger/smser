@@ -148,6 +148,13 @@ smser serve --port 443 --tls-cert cert.pem --tls-key key.pem --http-redirect-por
 
 This will redirect all HTTP requests on port 80 to HTTPS on port 443.
 
+To ensure redirects go to the correct hostname (matching your TLS certificate), use `--redirect-host`:
+
+```bash
+smser serve --port 443 --tls-cert cert.pem --tls-key key.pem \
+  --http-redirect-port 80 --redirect-host myserver.example.com
+```
+
 #### Per-Client Rate Limiting
 
 You can configure individual rate limits for specific clients. This is useful when different scripts or services need their own quotas.

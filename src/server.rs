@@ -43,6 +43,8 @@ pub struct ServerConfig {
     pub tls_key: Option<PathBuf>,
     /// Port for HTTP to HTTPS redirect (only used when TLS is enabled)
     pub http_redirect_port: Option<u16>,
+    /// Hostname to use for HTTPS redirects (defaults to request Host header)
+    pub redirect_host: Option<String>,
     /// Whether to log sensitive data (phone numbers, message content)
     pub log_sensitive: bool,
 }
@@ -121,23 +123,28 @@ pub async fn start_server(
         // Start HTTP redirect server if configured
         if let Some(http_port) = config.http_redirect_port {
             let https_port = addr.port();
+            let redirect_host = config.redirect_host.clone();
             tokio::spawn(async move {
                 let redirect_app = Router::new().fallback(move |req: axum::extract::Request| {
+                    let redirect_host = redirect_host.clone();
                     async move {
-                        let host = req
-                            .headers()
-                            .get("host")
-                            .and_then(|h| h.to_str().ok())
-                            .unwrap_or("localhost");
-                        // Remove port from host if present
-                        let host_without_port = host.split(':').next().unwrap_or(host);
+                        let host = if let Some(ref canonical_host) = redirect_host {
+                            canonical_host.as_str()
+                        } else {
+                            let req_host = req
+                                .headers()
+                                .get("host")
+                                .and_then(|h| h.to_str().ok())
+                                .unwrap_or("localhost");
+                            // Remove port from host if present
+                            req_host.split(':').next().unwrap_or(req_host)
+                        };
                         let path = req
                             .uri()
                             .path_and_query()
                             .map(|p| p.as_str())
                             .unwrap_or("/");
-                        let redirect_url =
-                            format!("https://{}:{}{}", host_without_port, https_port, path);
+                        let redirect_url = format!("https://{}:{}{}", host, https_port, path);
                         axum::response::Redirect::permanent(&redirect_url)
                     }
                 });
@@ -729,6 +736,7 @@ mod tests {
                 tls_cert: None,
                 tls_key: None,
                 http_redirect_port: None,
+                redirect_host: None,
                 log_sensitive: true,
             };
             start_server(listener, rx, config).await;
@@ -773,6 +781,7 @@ mod tests {
                 tls_cert: None,
                 tls_key: None,
                 http_redirect_port: None,
+                redirect_host: None,
                 log_sensitive: true,
             };
             start_server(listener, rx, config).await;
@@ -820,6 +829,7 @@ mod tests {
                 tls_cert: None,
                 tls_key: None,
                 http_redirect_port: None,
+                redirect_host: None,
                 log_sensitive: true,
             };
             start_server(listener, rx, config).await;
@@ -863,6 +873,7 @@ mod tests {
                 tls_cert: None,
                 tls_key: None,
                 http_redirect_port: None,
+                redirect_host: None,
                 log_sensitive: true,
             };
             start_server(listener, rx, config).await;
@@ -927,6 +938,7 @@ mod tests {
                 tls_cert: None,
                 tls_key: None,
                 http_redirect_port: None,
+                redirect_host: None,
                 log_sensitive: true,
             };
             start_server(listener, rx, config).await;
@@ -990,6 +1002,7 @@ mod tests {
                 tls_cert: Some(cert_path_clone),
                 tls_key: Some(key_path_clone),
                 http_redirect_port: None,
+                redirect_host: None,
                 log_sensitive: true,
             };
             start_server(listener, rx, config).await;
