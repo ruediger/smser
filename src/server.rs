@@ -64,6 +64,7 @@ struct AppState {
 }
 
 use tokio::sync::oneshot; // New import
+use tokio::sync::watch;
 
 pub async fn start_server(
     listener: TcpListener,
@@ -113,27 +114,54 @@ pub async fn start_server(
 
     let app = app.layer(TraceLayer::new_for_http()).with_state(app_state); // Pass state to the router
 
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    tokio::spawn(async move {
+        shutdown_signal.await.ok();
+        let _ = shutdown_tx.send(true);
+    });
+
     // Start SMS polling task if enabled
     if config.poll_interval > 0 {
         let poll_modem_url = config.modem_url.clone();
         let poll_interval_secs = config.poll_interval;
         let log_sensitive = config.log_sensitive;
+        let mut poll_shutdown_rx = shutdown_rx.clone();
         tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(poll_interval_secs));
-            // Skip the first immediate tick
-            interval.tick().await;
+            let mut last_seen_index: Option<i32> = None;
+            let mut consecutive_errors: u32 = 0;
+            let mut next_delay_secs = poll_interval_secs;
 
             loop {
-                interval.tick().await;
-                info!("Polling for new SMS messages...");
-
-                match poll_sms(&poll_modem_url, log_sensitive).await {
-                    Ok(count) => {
-                        info!("SMS poll complete, {} messages in inbox", count);
+                tokio::select! {
+                    _ = poll_shutdown_rx.changed() => {
+                        if *poll_shutdown_rx.borrow() {
+                            info!("SMS polling stopped");
+                            break;
+                        }
                     }
-                    Err(e) => {
-                        error!("SMS poll failed: {}", e);
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(next_delay_secs)) => {
+                        info!("Polling for new SMS messages...");
+                        match poll_sms(&poll_modem_url, log_sensitive, last_seen_index).await {
+                            Ok((count, new_last_seen, logged)) => {
+                                last_seen_index = new_last_seen;
+                                consecutive_errors = 0;
+                                next_delay_secs = poll_interval_secs;
+                                if logged > 0 {
+                                    info!("SMS poll complete, {} messages in inbox ({} new)", count, logged);
+                                } else {
+                                    info!("SMS poll complete, {} messages in inbox", count);
+                                }
+                            }
+                            Err(e) => {
+                                consecutive_errors = consecutive_errors.saturating_add(1);
+                                let backoff_multiplier = 2u64.saturating_pow(consecutive_errors.min(6));
+                                let max_backoff_secs = 3600u64;
+                                next_delay_secs = poll_interval_secs
+                                    .saturating_mul(backoff_multiplier)
+                                    .min(max_backoff_secs);
+                                error!("SMS poll failed: {} (retry in {}s)", e, next_delay_secs);
+                            }
+                        }
                     }
                 }
             }
@@ -191,8 +219,9 @@ pub async fn start_server(
 
         let handle = Handle::new();
         let handle_clone = handle.clone();
+        let mut tls_shutdown_rx = shutdown_rx.clone();
         tokio::spawn(async move {
-            shutdown_signal.await.ok();
+            tls_shutdown_rx.changed().await.ok();
             handle_clone.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
         });
 
@@ -202,9 +231,10 @@ pub async fn start_server(
             .await
             .unwrap();
     } else {
+        let mut http_shutdown_rx = shutdown_rx.clone();
         axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                shutdown_signal.await.ok();
+            .with_graceful_shutdown(async move {
+                http_shutdown_rx.changed().await.ok();
             })
             .await
             .unwrap();
@@ -212,11 +242,11 @@ pub async fn start_server(
 }
 
 fn html_escape(s: &str) -> String {
-    s.replace('<', "&lt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
         .replace('>', "&gt;")
-        .replace('&', "&amp;")
         .replace('"', "&quot;")
-        .replace('"', "&#39;")
+        .replace('\'', "&#39;")
 }
 
 async fn handler() -> Html<String> {
@@ -737,8 +767,12 @@ async fn get_sms_handler(
 }
 
 /// Poll the modem for SMS messages and log them.
-/// Returns the total count of messages in the inbox.
-async fn poll_sms(modem_url: &str, log_sensitive: bool) -> Result<i32, ModemError> {
+/// Returns (total count, last seen message index, new messages logged).
+async fn poll_sms(
+    modem_url: &str,
+    log_sensitive: bool,
+    last_seen_index: Option<i32>,
+) -> Result<(i32, Option<i32>, usize), ModemError> {
     let (session_id, token) = modem::get_session_info(modem_url).await?;
 
     let params = modem::SmsListParams {
@@ -754,22 +788,36 @@ async fn poll_sms(modem_url: &str, log_sensitive: bool) -> Result<i32, ModemErro
     // Update the stored SMS gauge
     gauge!("smser_sms_stored").set(response.count as f64);
 
-    // Log unread messages
+    let base_last_seen = last_seen_index;
+    let mut new_last_seen = last_seen_index;
+    let mut logged_count = 0usize;
+
+    // Log unread messages, de-duped by message index
     for msg in &response.messages.message {
         if msg.smstat == modem::SmsStat::Unread {
-            if log_sensitive {
-                info!(
-                    "New SMS from {}: {}",
-                    msg.phone,
-                    msg.content.chars().take(50).collect::<String>()
-                );
-            } else {
-                info!("New unread SMS received");
+            let is_new = match base_last_seen {
+                Some(last) => msg.index > last,
+                None => true,
+            };
+            if is_new {
+                logged_count += 1;
+                if log_sensitive {
+                    info!(
+                        "New SMS from {}: {}",
+                        msg.phone,
+                        msg.content.chars().take(50).collect::<String>()
+                    );
+                } else {
+                    info!("New unread SMS received");
+                }
+            }
+            if new_last_seen.is_none_or(|last| msg.index > last) {
+                new_last_seen = Some(msg.index);
             }
         }
     }
 
-    Ok(response.count)
+    Ok((response.count, new_last_seen, logged_count))
 }
 
 #[cfg(test)]
@@ -779,6 +827,16 @@ mod tests {
     use axum::http::StatusCode;
     use reqwest::Client;
     use std::time::Duration; // For StatusCode in tests
+
+    #[test]
+    fn test_html_escape() {
+        let input = r#"<div class="x">Tom & Jerry's</div>"#;
+        let escaped = html_escape(input);
+        assert_eq!(
+            escaped,
+            "&lt;div class=&quot;x&quot;&gt;Tom &amp; Jerry&#39;s&lt;/div&gt;"
+        );
+    }
 
     #[tokio::test]
     async fn test_start_server_hello_world() {

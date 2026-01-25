@@ -357,6 +357,13 @@ pub async fn run() {
                 .with(tracing_subscriber::fmt::layer())
                 .init();
 
+            if http_redirect_port.is_some() && redirect_host.is_none() {
+                eprintln!(
+                    "Error: --http-redirect-port requires --redirect-host to avoid open redirects."
+                );
+                return;
+            }
+
             // Call server start function here
             println!("Starting server on port {}", port);
             if !client_limits.is_empty() {
