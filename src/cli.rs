@@ -128,6 +128,10 @@ pub enum SmsCommand {
         /// Log sensitive data (phone numbers, message content) - disable for privacy
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         log_sensitive: bool,
+
+        /// Interval in seconds for polling new SMS messages (0 to disable)
+        #[arg(long, default_value_t = 300, env = "SMSER_POLL_INTERVAL")]
+        poll_interval: u64,
     },
 }
 
@@ -343,6 +347,7 @@ pub async fn run() {
             http_redirect_port,
             redirect_host,
             log_sensitive,
+            poll_interval,
         } => {
             tracing_subscriber::registry()
                 .with(tracing_subscriber::EnvFilter::new(
@@ -386,7 +391,13 @@ pub async fn run() {
                 http_redirect_port,
                 redirect_host,
                 log_sensitive,
+                poll_interval,
             };
+            if poll_interval > 0 {
+                println!("SMS polling enabled: every {} seconds", poll_interval);
+            } else {
+                println!("SMS polling disabled");
+            }
             crate::server::start_server(listener, rx, config).await;
         }
     }

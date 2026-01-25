@@ -47,6 +47,8 @@ pub struct ServerConfig {
     pub redirect_host: Option<String>,
     /// Whether to log sensitive data (phone numbers, message content)
     pub log_sensitive: bool,
+    /// Interval in seconds for polling new SMS messages (0 to disable)
+    pub poll_interval: u64,
 }
 
 #[derive(Clone)]
@@ -110,6 +112,33 @@ pub async fn start_server(
     let app = app.route("/alertmanager", post(alertmanager_handler));
 
     let app = app.layer(TraceLayer::new_for_http()).with_state(app_state); // Pass state to the router
+
+    // Start SMS polling task if enabled
+    if config.poll_interval > 0 {
+        let poll_modem_url = config.modem_url.clone();
+        let poll_interval_secs = config.poll_interval;
+        let log_sensitive = config.log_sensitive;
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(poll_interval_secs));
+            // Skip the first immediate tick
+            interval.tick().await;
+
+            loop {
+                interval.tick().await;
+                info!("Polling for new SMS messages...");
+
+                match poll_sms(&poll_modem_url, log_sensitive).await {
+                    Ok(count) => {
+                        info!("SMS poll complete, {} messages in inbox", count);
+                    }
+                    Err(e) => {
+                        error!("SMS poll failed: {}", e);
+                    }
+                }
+            }
+        });
+    }
 
     // run it
     let addr = listener.local_addr().unwrap();
@@ -707,6 +736,42 @@ async fn get_sms_handler(
     }
 }
 
+/// Poll the modem for SMS messages and log them.
+/// Returns the total count of messages in the inbox.
+async fn poll_sms(modem_url: &str, log_sensitive: bool) -> Result<i32, ModemError> {
+    let (session_id, token) = modem::get_session_info(modem_url).await?;
+
+    let params = modem::SmsListParams {
+        box_type: BoxType::LocalInbox,
+        sort_type: SortType::Date,
+        read_count: 20,
+        ascending: false,
+        unread_preferred: true,
+    };
+
+    let response = modem::get_sms_list(modem_url, &session_id, &token, params).await?;
+
+    // Update the stored SMS gauge
+    gauge!("smser_sms_stored").set(response.count as f64);
+
+    // Log unread messages
+    for msg in &response.messages.message {
+        if msg.smstat == modem::SmsStat::Unread {
+            if log_sensitive {
+                info!(
+                    "New SMS from {}: {}",
+                    msg.phone,
+                    msg.content.chars().take(50).collect::<String>()
+                );
+            } else {
+                info!("New unread SMS received");
+            }
+        }
+    }
+
+    Ok(response.count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -738,6 +803,7 @@ mod tests {
                 http_redirect_port: None,
                 redirect_host: None,
                 log_sensitive: true,
+                poll_interval: 0,
             };
             start_server(listener, rx, config).await;
         });
@@ -783,6 +849,7 @@ mod tests {
                 http_redirect_port: None,
                 redirect_host: None,
                 log_sensitive: true,
+                poll_interval: 0,
             };
             start_server(listener, rx, config).await;
         });
@@ -831,6 +898,7 @@ mod tests {
                 http_redirect_port: None,
                 redirect_host: None,
                 log_sensitive: true,
+                poll_interval: 0,
             };
             start_server(listener, rx, config).await;
         });
@@ -875,6 +943,7 @@ mod tests {
                 http_redirect_port: None,
                 redirect_host: None,
                 log_sensitive: true,
+                poll_interval: 0,
             };
             start_server(listener, rx, config).await;
         });
@@ -940,6 +1009,7 @@ mod tests {
                 http_redirect_port: None,
                 redirect_host: None,
                 log_sensitive: true,
+                poll_interval: 0,
             };
             start_server(listener, rx, config).await;
         });
@@ -1004,6 +1074,7 @@ mod tests {
                 http_redirect_port: None,
                 redirect_host: None,
                 log_sensitive: true,
+                poll_interval: 0,
             };
             start_server(listener, rx, config).await;
         });
