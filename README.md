@@ -131,6 +131,7 @@ When running in server mode (`smser serve`), the following endpoints are availab
     RUST_LOG=info smser serve --alert-to +441234567890 --hourly-limit 50 --daily-limit 500
     ```
 *   **Rate Limits**: Configurable via `--hourly-limit` (default 100) and `--daily-limit` (default 1000).
+*   **SMS Polling**: Enable periodic polling of the modem inbox with `--poll-interval` (seconds). Set to `0` to disable (default `300`).
 
 #### TLS Configuration
 
