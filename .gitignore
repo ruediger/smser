@@ -4,3 +4,4 @@ deploy.sh
 # AI assistant context files
 CLAUDE.md
 GEMINI.md
+AGENTS.md
