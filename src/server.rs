@@ -308,7 +308,10 @@ async fn handler() -> Html<String> {
             <div class="col-md-12">
                 <div class="card shadow-sm">
                     <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="card-title mb-0">Recent Messages</h5>
+                        <div class="d-flex align-items-center gap-2">
+                            <h5 class="card-title mb-0">Recent Messages</h5>
+                            <span id="messagesLastRefresh" class="text-muted small"></span>
+                        </div>
                         <button class="btn btn-sm btn-secondary" onclick="fetchMessages()">Refresh</button>
                     </div>
                     <div class="card-body">
@@ -322,6 +325,12 @@ async fn handler() -> Html<String> {
     </div>
 
     <script>
+        function setLastRefreshLabel() {{
+            const label = document.getElementById('messagesLastRefresh');
+            const now = new Date();
+            label.textContent = `Last refresh: ${{now.toLocaleString()}}`;
+        }}
+
         async function fetchMessages() {{
             try {{
                 const response = await fetch('/get-sms?count=10');
@@ -329,6 +338,7 @@ async fn handler() -> Html<String> {
                 const list = document.getElementById('messagesList');
 
                 if (data.status === 'success' && data.messages) {{
+                    setLastRefreshLabel();
                     if (data.messages.length === 0) {{
                         list.innerHTML = '<div class="text-center p-4">No messages found.</div>';
                         return;
@@ -346,9 +356,11 @@ async fn handler() -> Html<String> {
                         </div>
                     `).join('');
                 }} else {{
+                    setLastRefreshLabel();
                     list.innerHTML = `<div class="alert alert-danger">Error: ${{data.message || 'Failed to load'}}</div>`;
                 }}
             }} catch (e) {{
+                setLastRefreshLabel();
                 document.getElementById('messagesList').innerHTML = `<div class="alert alert-danger">Error connecting to server.</div>`;
             }}
         }}
