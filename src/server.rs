@@ -328,7 +328,7 @@ async fn handler() -> Html<String> {
         function setLastRefreshLabel() {{
             const label = document.getElementById('messagesLastRefresh');
             const now = new Date();
-            label.textContent = `Last refresh: ${{now.toLocaleString()}}`;
+            label.textContent = `Last refresh: ${{now.toISOString()}}`;
         }}
 
         async function fetchMessages() {{
