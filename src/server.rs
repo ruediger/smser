@@ -7,12 +7,14 @@ use axum::http::StatusCode; // For HTTP status codes
 use axum::response::Html;
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     routing::{get, post},
 };
 use metrics::{counter, gauge};
 use metrics_exporter_prometheus::PrometheusHandle;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "alertmanager")]
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
@@ -39,6 +41,8 @@ pub struct ServerConfig {
     pub rate_limiter: RateLimiter,
     #[cfg(feature = "alertmanager")]
     pub alert_phone_number: Option<String>,
+    #[cfg(feature = "alertmanager")]
+    pub alert_receivers: HashMap<String, String>,
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
     /// Port for HTTP to HTTPS redirect (only used when TLS is enabled)
@@ -58,6 +62,8 @@ struct AppState {
     prometheus_handle: PrometheusHandle,
     #[cfg(feature = "alertmanager")]
     alert_phone_number: Option<String>,
+    #[cfg(feature = "alertmanager")]
+    alert_receivers: HashMap<String, String>,
     start_time: Instant,
     tls_enabled: bool,
     log_sensitive: bool,
@@ -96,6 +102,8 @@ pub async fn start_server(
         prometheus_handle: config.prometheus_handle,
         #[cfg(feature = "alertmanager")]
         alert_phone_number: config.alert_phone_number,
+        #[cfg(feature = "alertmanager")]
+        alert_receivers: config.alert_receivers,
         start_time,
         tls_enabled,
         log_sensitive: config.log_sensitive,
@@ -110,7 +118,9 @@ pub async fn start_server(
         .route("/statusz", get(status_handler));
 
     #[cfg(feature = "alertmanager")]
-    let app = app.route("/alertmanager", post(alertmanager_handler));
+    let app = app
+        .route("/alertmanager", post(alertmanager_handler))
+        .route("/alertmanager/:name", post(alertmanager_named_handler));
 
     let app = app.layer(TraceLayer::new_for_http()).with_state(app_state); // Pass state to the router
 
@@ -462,14 +472,29 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
 
     // Build alert recipient HTML (only if alertmanager feature is enabled)
     #[cfg(feature = "alertmanager")]
-    let alert_html = match &state.alert_phone_number {
-        Some(phone) => format!(
-            r#"<div class="stat"><span class="label">Alert Recipient:</span> {}</div>"#,
-            html_escape(phone)
-        ),
-        None => String::from(
-            r#"<div class="stat"><span class="label">Alert Recipient:</span> <em>Not configured</em></div>"#,
-        ),
+    let alert_html = {
+        let mut html = match &state.alert_phone_number {
+            Some(phone) => format!(
+                r#"<div class="stat"><span class="label">Alert Recipient:</span> {}</div>"#,
+                html_escape(phone)
+            ),
+            None => String::from(
+                r#"<div class="stat"><span class="label">Alert Recipient:</span> <em>Not configured</em></div>"#,
+            ),
+        };
+        if !state.alert_receivers.is_empty() {
+            let mut names: Vec<_> = state.alert_receivers.keys().collect();
+            names.sort();
+            for name in names {
+                let phone = &state.alert_receivers[name];
+                html.push_str(&format!(
+                    r#"<div class="stat"><span class="label">Alert Receiver '{}':</span> {}</div>"#,
+                    html_escape(name),
+                    html_escape(phone)
+                ));
+            }
+        }
+        html
     };
     #[cfg(not(feature = "alertmanager"))]
     let alert_html = String::new();
@@ -708,6 +733,91 @@ async fn alertmanager_handler(
     }
 }
 
+#[cfg(feature = "alertmanager")]
+async fn alertmanager_named_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(payload): Json<AlertManagerWebhook>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    counter!("smser_http_requests_total", "endpoint" => "/alertmanager", "receiver" => name.clone())
+        .increment(1);
+
+    info!(
+        "Received alert from Alert Manager for receiver '{}': status={}",
+        name, payload.status
+    );
+
+    let to = match state.alert_receivers.get(&name) {
+        Some(phone) => phone,
+        None => {
+            error!(
+                "Alert Manager webhook received for unknown receiver '{}'",
+                name
+            );
+            return Err((
+                StatusCode::NOT_FOUND,
+                format!("Unknown alert receiver '{}'", name),
+            ));
+        }
+    };
+
+    let message = alertmanager::format_alert_message(&payload);
+
+    // Check rate limit (use "alertmanager:<name>" as client name for per-receiver limits)
+    let client_name = format!("alertmanager:{}", name);
+    if let Err(e) = state.rate_limiter.check_and_increment(Some(&client_name)) {
+        error!(
+            "Rate limit exceeded for alert SMS (receiver '{}'): {}",
+            name, e
+        );
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            format!("Rate limit exceeded: {}", e),
+        ));
+    }
+
+    let (session_id, token) = match modem::get_session_info(&state.modem_url).await {
+        Ok((s, t)) => (s, t),
+        Err(e) => {
+            error!("Error getting session info for alert SMS: {}", e);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get session info: {}", e),
+            ));
+        }
+    };
+
+    match modem::send_sms(&state.modem_url, &session_id, &token, to, &message, false).await {
+        Ok(_) => {
+            if state.log_sensitive {
+                info!(
+                    "Alert SMS sent successfully to {} (receiver '{}'): {:?}",
+                    to, name, message
+                );
+            } else {
+                info!("Alert SMS sent successfully (receiver '{}')", name);
+            }
+            counter!("smser_sms_sent_total").increment(1);
+            let country_code = extract_country_code(to);
+            counter!("smser_sms_country_total", "country_code" => country_code).increment(1);
+            Ok(Json(
+                serde_json::json!({"status": "success", "message": "Alert SMS sent successfully!"}),
+            ))
+        }
+        Err(e) => {
+            error!("Error sending alert SMS (receiver '{}'): {}", name, e);
+            let status = match e {
+                ModemError::ModemError {
+                    code: _,
+                    message: _,
+                } => StatusCode::BAD_REQUEST,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            Err((status, format!("Failed to send alert SMS: {}", e)))
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct GetSmsRequest {
     #[serde(default = "default_count")]
@@ -868,6 +978,8 @@ mod tests {
                 rate_limiter,
                 #[cfg(feature = "alertmanager")]
                 alert_phone_number: None,
+                #[cfg(feature = "alertmanager")]
+                alert_receivers: HashMap::new(),
                 tls_cert: None,
                 tls_key: None,
                 http_redirect_port: None,
@@ -914,6 +1026,8 @@ mod tests {
                 rate_limiter,
                 #[cfg(feature = "alertmanager")]
                 alert_phone_number: None,
+                #[cfg(feature = "alertmanager")]
+                alert_receivers: HashMap::new(),
                 tls_cert: None,
                 tls_key: None,
                 http_redirect_port: None,
@@ -963,6 +1077,8 @@ mod tests {
                 rate_limiter,
                 #[cfg(feature = "alertmanager")]
                 alert_phone_number: None,
+                #[cfg(feature = "alertmanager")]
+                alert_receivers: HashMap::new(),
                 tls_cert: None,
                 tls_key: None,
                 http_redirect_port: None,
@@ -1008,6 +1124,7 @@ mod tests {
                 prometheus_handle: handle,
                 rate_limiter,
                 alert_phone_number: Some("+441234567890".to_string()),
+                alert_receivers: HashMap::new(),
                 tls_cert: None,
                 tls_key: None,
                 http_redirect_port: None,
@@ -1057,6 +1174,85 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "alertmanager")]
+    async fn test_alertmanager_named_receiver() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let modem_url = "http://localhost:8080".to_string();
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let server_handle = tokio::spawn(async move {
+            let handle = setup_metrics();
+            let rate_limiter = RateLimiter::new(100, 1000, vec![]);
+            let mut receivers = HashMap::new();
+            receivers.insert("oncall".to_string(), "+449876543210".to_string());
+            let config = ServerConfig {
+                modem_url,
+                prometheus_handle: handle,
+                rate_limiter,
+                alert_phone_number: None,
+                alert_receivers: receivers,
+                tls_cert: None,
+                tls_key: None,
+                http_redirect_port: None,
+                redirect_host: None,
+                log_sensitive: true,
+                poll_interval: 0,
+            };
+            start_server(listener, rx, config).await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let json = r#"{
+  "version": "4",
+  "groupKey": "{}:{alertname=\"TestAlert\"}",
+  "truncatedAlerts": 0,
+  "status": "firing",
+  "receiver": "sms-oncall",
+  "groupLabels": {},
+  "commonLabels": {
+    "alertname": "TestAlert",
+    "severity": "critical"
+  },
+  "commonAnnotations": {
+    "summary": "Something is broken"
+  },
+  "externalURL": "http://localhost:9093",
+  "alerts": []
+}"#;
+
+        let client = Client::new();
+
+        // Known receiver should reach modem call (500 because modem is unavailable)
+        let response = client
+            .post(format!("http://127.0.0.1:{}/alertmanager/oncall", port))
+            .header("Content-Type", "application/json")
+            .body(json.to_string())
+            .send()
+            .await
+            .expect("Failed to send request");
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response.text().await.unwrap();
+        assert!(body.contains("Failed to get session info"));
+
+        // Unknown receiver should return 404
+        let response = client
+            .post(format!("http://127.0.0.1:{}/alertmanager/unknown", port))
+            .header("Content-Type", "application/json")
+            .body(json.to_string())
+            .send()
+            .await
+            .expect("Failed to send request");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = response.text().await.unwrap();
+        assert!(body.contains("Unknown alert receiver"));
+
+        tx.send(()).unwrap();
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_get_sms_endpoint_error() {
         // Find an available port for testing
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1074,6 +1270,8 @@ mod tests {
                 rate_limiter,
                 #[cfg(feature = "alertmanager")]
                 alert_phone_number: None,
+                #[cfg(feature = "alertmanager")]
+                alert_receivers: HashMap::new(),
                 tls_cert: None,
                 tls_key: None,
                 http_redirect_port: None,
@@ -1139,6 +1337,8 @@ mod tests {
                 rate_limiter,
                 #[cfg(feature = "alertmanager")]
                 alert_phone_number: None,
+                #[cfg(feature = "alertmanager")]
+                alert_receivers: HashMap::new(),
                 tls_cert: Some(cert_path_clone),
                 tls_key: Some(key_path_clone),
                 http_redirect_port: None,

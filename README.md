@@ -123,6 +123,9 @@ When running in server mode (`smser serve`), the following endpoints are availab
 *   **`POST /alertmanager`**: Prometheus Alert Manager [webhook handler](https://prometheus.io/docs/alerting/latest/configuration/#webhook_config).
     *   Accepts standard Alert Manager JSON.
     *   Formats and sends alerts as SMS to the number configured via `--alert-to`.
+*   **`POST /alertmanager/:name`**: Named alert receiver endpoint.
+    *   Routes alerts to different phone numbers based on receiver name.
+    *   Configured via `--alert-receiver name:phone_number` (repeatable).
 
 #### Configuration & Logging
 
@@ -179,6 +182,49 @@ Via the API, include the `client` field in the request:
 - Named clients count against both their own limit AND the global limit
 - Unknown clients (no `--client`) use only global limits
 - AlertManager webhook automatically uses client name "alertmanager"
+
+#### AlertManager Named Receivers
+
+You can route different alerts to different phone numbers by defining named receivers. Each receiver creates a `/alertmanager/:name` endpoint that sends SMS to a specific phone number.
+
+```bash
+smser serve \
+  --alert-to "+441234567890" \
+  --alert-receiver oncall:+441234567890 \
+  --alert-receiver management:+449876543210
+```
+
+This creates the following endpoints:
+- `POST /alertmanager` — sends to the default `--alert-to` number
+- `POST /alertmanager/oncall` — sends to +441234567890
+- `POST /alertmanager/management` — sends to +449876543210
+
+On the AlertManager side, configure multiple receivers with different webhook URLs:
+
+```yaml
+receivers:
+  - name: sms-oncall
+    webhook_configs:
+      - url: http://smser:5566/alertmanager/oncall
+  - name: sms-management
+    webhook_configs:
+      - url: http://smser:5566/alertmanager/management
+
+route:
+  receiver: sms-oncall
+  routes:
+    - match:
+        severity: critical
+      receiver: sms-management
+```
+
+Named receivers use `alertmanager:<name>` as their rate-limit client name, so you can set per-receiver limits:
+
+```bash
+smser serve \
+  --alert-receiver oncall:+441234567890 \
+  --client-limit alertmanager:oncall:10:100
+```
 
 ## Monitoring
 

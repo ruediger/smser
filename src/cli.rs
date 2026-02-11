@@ -92,10 +92,16 @@ pub enum SmsCommand {
         #[arg(short, long, default_value_t = 8080)]
         port: u16,
 
-        /// The phone number to send alerts to
+        /// The phone number to send alerts to (default receiver for /alertmanager)
         #[cfg(feature = "alertmanager")]
         #[arg(long, env = "SMSER_ALERT_TO")]
         alert_to: Option<String>,
+
+        /// Named alert receiver in format "name:phone_number" (can be repeated).
+        /// Creates /alertmanager/:name endpoints.
+        #[cfg(feature = "alertmanager")]
+        #[arg(long = "alert-receiver", value_parser = parse_alert_receiver)]
+        alert_receivers: Vec<(String, String)>,
 
         /// Hourly SMS limit
         #[arg(long, default_value_t = 100)]
@@ -138,6 +144,25 @@ pub enum SmsCommand {
 #[cfg(feature = "server")]
 fn parse_client_limit(s: &str) -> Result<ClientLimit, String> {
     ClientLimit::parse(s)
+}
+
+#[cfg(feature = "alertmanager")]
+fn parse_alert_receiver(s: &str) -> Result<(String, String), String> {
+    let pos = s.find(':').ok_or_else(|| {
+        format!(
+            "invalid receiver format '{}', expected name:phone_number",
+            s
+        )
+    })?;
+    let name = s[..pos].to_string();
+    let phone = s[pos + 1..].to_string();
+    if name.is_empty() {
+        return Err("receiver name must not be empty".to_string());
+    }
+    if phone.is_empty() {
+        return Err("receiver phone number must not be empty".to_string());
+    }
+    Ok((name, phone))
 }
 
 pub async fn run() {
@@ -339,6 +364,8 @@ pub async fn run() {
             port,
             #[cfg(feature = "alertmanager")]
             alert_to,
+            #[cfg(feature = "alertmanager")]
+            alert_receivers,
             hourly_limit,
             daily_limit,
             client_limits,
@@ -393,6 +420,8 @@ pub async fn run() {
                 rate_limiter,
                 #[cfg(feature = "alertmanager")]
                 alert_phone_number: alert_to,
+                #[cfg(feature = "alertmanager")]
+                alert_receivers: alert_receivers.into_iter().collect(),
                 tls_cert,
                 tls_key,
                 http_redirect_port,
@@ -570,6 +599,39 @@ mod tests {
                     ..
                 } => {
                     assert_eq!(alert_to, Some("+447700900123".to_string()));
+                }
+                _ => panic!("Expected Serve command"),
+            }
+        });
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    #[cfg(feature = "alertmanager")]
+    fn test_args_parsing_alert_receivers() {
+        temp_env::with_var("SMSER_ALERT_TO", None::<String>, || {
+            let args = Args::try_parse_from([
+                "smser",
+                "serve",
+                "--alert-receiver",
+                "oncall:+441234567890",
+                "--alert-receiver",
+                "management:+449876543210",
+            ])
+            .expect("Failed to parse arguments");
+            match args.command {
+                SmsCommand::Serve {
+                    alert_receivers, ..
+                } => {
+                    assert_eq!(alert_receivers.len(), 2);
+                    assert!(
+                        alert_receivers
+                            .contains(&("oncall".to_string(), "+441234567890".to_string()))
+                    );
+                    assert!(
+                        alert_receivers
+                            .contains(&("management".to_string(), "+449876543210".to_string()))
+                    );
                 }
                 _ => panic!("Expected Serve command"),
             }
