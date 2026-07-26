@@ -39,4 +39,4 @@ jobs:
       - name: Run tests
         run: cargo test --verbose ${{ matrix.features }}
       - name: Run clippy
-        run: cargo clippy --verbose ${{ matrix.features }} -- -D warnings
+        run: cargo clippy --verbose --all-targets ${{ matrix.features }} -- -D warnings
