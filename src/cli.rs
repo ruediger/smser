@@ -441,6 +441,7 @@ pub async fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "modem")]
     use super::*;
     #[cfg(feature = "modem")]
     use crate::modem;

@@ -3,11 +3,13 @@ use crate::alertmanager::{self, AlertManagerWebhook};
 use crate::buildinfo;
 use crate::metrics::RateLimiter;
 use crate::modem::{self, BoxType, Error as ModemError, SortType}; // Import modem module and alias Error
+#[cfg(feature = "alertmanager")]
+use axum::extract::Path;
 use axum::http::StatusCode; // For HTTP status codes
 use axum::response::Html;
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::{Query, State},
     routing::{get, post},
 };
 use metrics::{counter, gauge};
