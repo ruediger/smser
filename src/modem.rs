@@ -297,3 +297,167 @@ pub async fn send_sms(
         }
     }
 }
+
+/// SIM state reported by `/api/pin/status`. The modem uses a numeric code;
+/// only `SIM_READY` means the card is usable.
+///
+/// 255 no SIM, 256 CPIN error, 257 ready, 258 PIN disabled,
+/// 259 PIN checking, 260 PIN required, 261 PUK required.
+pub const SIM_READY: i32 = 257;
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(rename = "response")]
+struct PinStatusResponse {
+    #[serde(rename = "SimState")]
+    sim_state: i32,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(rename = "response")]
+struct MonitoringStatusResponse {
+    /// Signal bars, 0-5. Zero means no usable signal.
+    ///
+    /// Deserialized as a string because the modem emits an empty element
+    /// rather than a value for fields it has nothing to report -- an `i32`
+    /// here fails to parse exactly when the modem is unhealthy.
+    #[serde(rename = "SignalIcon", default)]
+    signal_icon: Option<String>,
+}
+
+impl MonitoringStatusResponse {
+    fn signal_bars(&self) -> Option<i32> {
+        self.signal_icon.as_deref()?.trim().parse().ok()
+    }
+}
+
+/// Health of the modem and the SIM in it.
+///
+/// Separate from whether an SMS send succeeds: a send only happens when an
+/// alert fires, which may be weeks apart, so a modem that has silently stopped
+/// working would otherwise go unnoticed until the moment it is needed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModemHealth {
+    pub sim_state: i32,
+    pub signal_bars: i32,
+}
+
+impl ModemHealth {
+    pub fn sim_ready(&self) -> bool {
+        self.sim_state == SIM_READY
+    }
+
+    /// Registered on a network, as opposed to merely having an unlocked SIM.
+    pub fn has_signal(&self) -> bool {
+        self.signal_bars > 0
+    }
+}
+
+/// Queries SIM and signal state. Requires a session, like every other
+/// authenticated endpoint on this modem.
+pub async fn get_modem_health(modem_url: &str) -> Result<ModemHealth, Error> {
+    let (session_id, token) = get_session_info(modem_url).await?;
+
+    let client = HttpClient::builder()
+        .timeout(std::time::Duration::new(10, 0))
+        .build()?;
+
+    let get = |path: &str| {
+        client
+            .get(format!("{}{}", modem_url, path))
+            .header("Cookie", format!("SessionID={}", session_id))
+            .header("__RequestVerificationToken", token.clone())
+            .send()
+    };
+
+    let pin_text = get("/api/pin/status").await?.text().await?;
+    let pin: PinStatusResponse = from_str(&pin_text)
+        .map_err(|_| Error::Other(format!("Unexpected /api/pin/status response: {}", pin_text)))?;
+
+    // Signal is secondary: a locked SIM has no signal, and reporting the SIM
+    // state is more useful than failing the whole probe.
+    let signal_bars = match get("/api/monitoring/status").await {
+        Ok(resp) => match resp.text().await {
+            Ok(text) => from_str::<MonitoringStatusResponse>(&text)
+                .ok()
+                .and_then(|s| s.signal_bars())
+                .unwrap_or(0),
+            Err(_) => 0,
+        },
+        Err(_) => 0,
+    };
+
+    Ok(ModemHealth {
+        sim_state: pin.sim_state,
+        signal_bars,
+    })
+}
+
+#[cfg(test)]
+mod health_tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_pin_status() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?><response>
+            <SimState>257</SimState><PinOptState>258</PinOptState>
+            <SimPinTimes>3</SimPinTimes><SimPukTimes>10</SimPukTimes></response>"#;
+        let parsed: PinStatusResponse = from_str(xml).unwrap();
+        assert_eq!(parsed.sim_state, SIM_READY);
+    }
+
+    #[test]
+    fn test_parse_pin_status_locked() {
+        // The state the modem sat in, unnoticed, from 2026-07-19 to 2026-07-27.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?><response>
+            <SimState>260</SimState><SimPinTimes>3</SimPinTimes></response>"#;
+        let parsed: PinStatusResponse = from_str(xml).unwrap();
+        assert_eq!(parsed.sim_state, 260);
+        assert!(
+            !ModemHealth {
+                sim_state: parsed.sim_state,
+                signal_bars: 0
+            }
+            .sim_ready()
+        );
+    }
+
+    #[test]
+    fn test_parse_monitoring_status() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?><response>
+            <ConnectionStatus>901</ConnectionStatus><SignalIcon>4</SignalIcon>
+            <SimStatus>1</SimStatus></response>"#;
+        let parsed: MonitoringStatusResponse = from_str(xml).unwrap();
+        assert_eq!(parsed.signal_bars(), Some(4));
+    }
+
+    #[test]
+    fn test_parse_monitoring_status_empty_signal() {
+        // The modem returns an empty element rather than 0 when unregistered.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?><response>
+            <SignalIcon></SignalIcon></response>"#;
+        let parsed: MonitoringStatusResponse = from_str(xml).unwrap();
+        assert_eq!(parsed.signal_bars(), None);
+    }
+
+    #[test]
+    fn test_health_predicates() {
+        let ok = ModemHealth {
+            sim_state: SIM_READY,
+            signal_bars: 4,
+        };
+        assert!(ok.sim_ready() && ok.has_signal());
+
+        let locked = ModemHealth {
+            sim_state: 260,
+            signal_bars: 0,
+        };
+        assert!(!locked.sim_ready() && !locked.has_signal());
+
+        // Unlocked but not yet registered -- the state right after a reboot.
+        let unregistered = ModemHealth {
+            sim_state: SIM_READY,
+            signal_bars: 0,
+        };
+        assert!(unregistered.sim_ready() && !unregistered.has_signal());
+    }
+}

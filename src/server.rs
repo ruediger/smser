@@ -26,7 +26,11 @@ use axum_server::Handle;
 #[cfg(feature = "server")]
 use axum_server::tls_rustls::RustlsConfig;
 use tower_http::trace::TraceLayer;
-use tracing::{error, info};
+use tracing::{error, info, warn};
+
+/// How often to probe modem/SIM health. Frequent enough to catch a failure
+/// the same evening, cheap enough to be irrelevant: two local HTTP calls.
+const MODEM_HEALTH_INTERVAL_SECS: u64 = 300;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SendSmsRequest {
@@ -175,6 +179,60 @@ pub async fn start_server(
                             }
                         }
                     }
+                }
+            }
+        });
+    }
+
+    // Modem health probe.
+    //
+    // Independent of SMS traffic on purpose: a send only happens when an alert
+    // fires, which can be weeks apart, so without this a modem that has
+    // silently stopped working is only discovered at the moment it is needed.
+    // This is exactly how a PIN-locked SIM went unnoticed for eight days.
+    {
+        let health_modem_url = config.modem_url.clone();
+        let mut health_shutdown_rx = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let interval = std::time::Duration::from_secs(MODEM_HEALTH_INTERVAL_SECS);
+            let mut last_sim_ready: Option<bool> = None;
+            loop {
+                match modem::get_modem_health(&health_modem_url).await {
+                    Ok(health) => {
+                        crate::metrics::record_modem_health(Some(&health));
+                        // Log transitions only; a healthy modem should be quiet.
+                        if last_sim_ready != Some(health.sim_ready()) {
+                            if health.sim_ready() {
+                                info!(
+                                    "Modem SIM ready (state {}, signal {} bars)",
+                                    health.sim_state, health.signal_bars
+                                );
+                            } else {
+                                warn!(
+                                    "Modem SIM not usable: state {} (257 ready, 260 PIN required, 261 PUK required)",
+                                    health.sim_state
+                                );
+                            }
+                            last_sim_ready = Some(health.sim_ready());
+                        }
+                    }
+                    Err(e) => {
+                        crate::metrics::record_modem_health(None);
+                        if last_sim_ready != Some(false) {
+                            warn!("Modem health probe failed: {}", e);
+                            last_sim_ready = Some(false);
+                        }
+                    }
+                }
+
+                tokio::select! {
+                    _ = health_shutdown_rx.changed() => {
+                        if *health_shutdown_rx.borrow() {
+                            info!("Modem health probe stopped");
+                            break;
+                        }
+                    }
+                    _ = tokio::time::sleep(interval) => {}
                 }
             }
         });

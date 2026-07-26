@@ -312,6 +312,31 @@ pub fn setup_metrics() -> PrometheusHandle {
                 Unit::Count,
                 "Version information of the server"
             );
+            describe_gauge!(
+                "smser_modem_reachable",
+                Unit::Count,
+                "Whether the modem HTTP API answered the last health probe (1 or 0)"
+            );
+            describe_gauge!(
+                "smser_modem_sim_ready",
+                Unit::Count,
+                "Whether the SIM is unlocked and usable (1 or 0)"
+            );
+            describe_gauge!(
+                "smser_modem_sim_state",
+                Unit::Count,
+                "Raw modem SIM state code (257 ready, 260 PIN required, 261 PUK required)"
+            );
+            describe_gauge!(
+                "smser_modem_signal_bars",
+                Unit::Count,
+                "Modem signal strength, 0-5. Zero means not registered on a network"
+            );
+            describe_gauge!(
+                "smser_modem_last_probe_timestamp_seconds",
+                Unit::Seconds,
+                "Unix time of the last completed modem health probe"
+            );
 
             handle
         })
@@ -328,6 +353,34 @@ pub fn update_client_limits_metrics(client_limits: &[ClientLimit]) {
         gauge!("smser_client_hourly_limit", "client" => cl.name.clone())
             .set(cl.hourly_limit as f64);
         gauge!("smser_client_daily_limit", "client" => cl.name.clone()).set(cl.daily_limit as f64);
+    }
+}
+
+/// Publish the result of a modem health probe.
+///
+/// `health` is `None` when the modem could not be reached at all. The SIM and
+/// signal gauges are zeroed in that case rather than left at their last value,
+/// so a modem that vanishes does not keep reporting a healthy SIM.
+pub fn record_modem_health(health: Option<&crate::modem::ModemHealth>) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    gauge!("smser_modem_last_probe_timestamp_seconds").set(now);
+
+    match health {
+        Some(h) => {
+            gauge!("smser_modem_reachable").set(1.0);
+            gauge!("smser_modem_sim_ready").set(if h.sim_ready() { 1.0 } else { 0.0 });
+            gauge!("smser_modem_sim_state").set(h.sim_state as f64);
+            gauge!("smser_modem_signal_bars").set(h.signal_bars as f64);
+        }
+        None => {
+            gauge!("smser_modem_reachable").set(0.0);
+            gauge!("smser_modem_sim_ready").set(0.0);
+            gauge!("smser_modem_sim_state").set(0.0);
+            gauge!("smser_modem_signal_bars").set(0.0);
+        }
     }
 }
 
