@@ -4,8 +4,16 @@ pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// Short commit the binary was built from, with a `-dirty` suffix when the
+/// working tree had uncommitted tracked changes at build time.
 pub fn git_hash() -> &'static str {
     env!("GIT_HASH")
+}
+
+/// Whether this binary was built from a modified working tree, meaning its
+/// commit hash does not fully describe the source it came from.
+pub fn is_dirty() -> bool {
+    git_hash().ends_with("-dirty")
 }
 
 /// Returns version with git hash, e.g. "0.1.0 (abc1234)"

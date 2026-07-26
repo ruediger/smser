@@ -525,7 +525,7 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
     <h1>SMS Server Status</h1>
     <div class="card">
         <h2>Configuration</h2>
-        <div class="stat"><span class="label">Version:</span> {version}</div>
+        <div class="stat"><span class="label">Version:</span> {version}{dirty_note}</div>
         <div class="stat"><span class="label">Modem URL:</span> {modem_url}</div>
         <div class="stat"><span class="label">TLS:</span> {tls_status}</div>
         {alert_html}
@@ -546,6 +546,12 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
 </body>
 </html>"#,
         version = html_escape(&buildinfo::version_full()),
+        dirty_note = if buildinfo::is_dirty() {
+            // The commit hash alone would misrepresent what is running.
+            " (built from a modified working tree)"
+        } else {
+            ""
+        },
         modem_url = html_escape(&state.modem_url),
         tls_status = tls_status,
         alert_html = alert_html,
