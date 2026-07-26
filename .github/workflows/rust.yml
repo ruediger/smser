@@ -18,7 +18,7 @@ jobs:
     name: Rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check formatting
         run: cargo fmt -- --check
 
@@ -33,7 +33,7 @@ jobs:
           "--no-default-features --features server"
         ]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build
         run: cargo build --verbose ${{ matrix.features }}
       - name: Run tests
