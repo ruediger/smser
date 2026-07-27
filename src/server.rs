@@ -73,8 +73,13 @@ struct AppState {
     start_time: Instant,
     tls_enabled: bool,
     log_sensitive: bool,
+    /// Result of the most recent modem health probe. `None` before the first
+    /// probe completes, or when the modem could not be reached.
+    modem_health: Arc<RwLock<Option<modem::ModemHealth>>>,
 }
 
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use tokio::sync::oneshot; // New import
 use tokio::sync::watch;
 
@@ -102,6 +107,7 @@ pub async fn start_server(
     gauge!("smser_version_info", "version" => buildinfo::version(), "git_hash" => buildinfo::git_hash()).set(1.0);
 
     let tls_enabled = config.tls_cert.is_some() && config.tls_key.is_some();
+    let modem_health: Arc<RwLock<Option<modem::ModemHealth>>> = Arc::new(RwLock::new(None));
     let app_state = AppState {
         modem_url: config.modem_url.clone(),
         rate_limiter: config.rate_limiter,
@@ -113,6 +119,7 @@ pub async fn start_server(
         start_time,
         tls_enabled,
         log_sensitive: config.log_sensitive,
+        modem_health: modem_health.clone(),
     };
 
     let app = Router::new()
@@ -192,6 +199,7 @@ pub async fn start_server(
     // This is exactly how a PIN-locked SIM went unnoticed for eight days.
     {
         let health_modem_url = config.modem_url.clone();
+        let health_state = modem_health.clone();
         let mut health_shutdown_rx = shutdown_rx.clone();
         tokio::spawn(async move {
             let interval = std::time::Duration::from_secs(MODEM_HEALTH_INTERVAL_SECS);
@@ -200,6 +208,7 @@ pub async fn start_server(
                 match modem::get_modem_health(&health_modem_url).await {
                     Ok(health) => {
                         crate::metrics::record_modem_health(Some(&health));
+                        *health_state.write().await = Some(health.clone());
                         // Log transitions only; a healthy modem should be quiet.
                         if last_sim_ready != Some(health.sim_ready()) {
                             if health.sim_ready() {
@@ -218,6 +227,7 @@ pub async fn start_server(
                     }
                     Err(e) => {
                         crate::metrics::record_modem_health(None);
+                        *health_state.write().await = None;
                         if last_sim_ready != Some(false) {
                             warn!("Modem health probe failed: {}", e);
                             last_sim_ready = Some(false);
@@ -319,8 +329,52 @@ fn html_escape(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-async fn handler() -> Html<String> {
+/// Human-readable modem state for the web pages.
+///
+/// Returns (bootstrap colour, short label, detail). `None` means the modem was
+/// unreachable at the last probe, which is distinct from a reachable modem
+/// reporting an unusable SIM.
+fn describe_modem(health: Option<&modem::ModemHealth>) -> (&'static str, String, String) {
+    match health {
+        None => (
+            "danger",
+            "Modem unreachable".to_string(),
+            "The modem HTTP API did not answer the last health probe.".to_string(),
+        ),
+        Some(h) if !h.sim_ready() => {
+            let reason = match h.sim_state {
+                255 => "no SIM detected",
+                256 => "CPIN error",
+                260 => "SIM PIN required",
+                261 => "SIM PUK required",
+                _ => "SIM not usable",
+            };
+            (
+                "danger",
+                format!("SIM not ready: {}", reason),
+                format!(
+                    "State {}. SMS alerting and 4G failover are both unavailable.",
+                    h.sim_state
+                ),
+            )
+        }
+        Some(h) if !h.has_signal() => (
+            "warning",
+            "No signal".to_string(),
+            "SIM is ready but the modem is not registered on a network.".to_string(),
+        ),
+        Some(h) => (
+            "success",
+            format!("SIM ready, {} bars", h.signal_bars),
+            format!("State {}, signal {}/5.", h.sim_state, h.signal_bars),
+        ),
+    }
+}
+
+async fn handler(State(state): State<AppState>) -> Html<String> {
     counter!("smser_http_requests_total", "endpoint" => "/").increment(1);
+    let (modem_colour, modem_label, modem_detail) =
+        describe_modem(state.modem_health.read().await.as_ref());
     let html = format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -341,6 +395,7 @@ async fn handler() -> Html<String> {
         <div class="container-fluid">
             <span class="navbar-brand mb-0 h1">smser Gateway</span>
             <div class="d-flex align-items-center">
+                <span class="badge text-bg-{} me-2" title="{}">Modem: {}</span>
                 <span class="badge text-bg-secondary me-2">{}</span>
                 <a href="{}" class="btn btn-outline-info btn-sm me-2" target="_blank">GitHub</a>
                 <a href="/status" class="btn btn-outline-light btn-sm me-2">Status</a>
@@ -474,6 +529,9 @@ async fn handler() -> Html<String> {
     </script>
 </body>
 </html>"#,
+        modem_colour,
+        html_escape(&modem_detail),
+        html_escape(&modem_label),
         html_escape(&buildinfo::version_full()),
         html_escape(buildinfo::repository())
     );
@@ -559,6 +617,20 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
     #[cfg(not(feature = "alertmanager"))]
     let alert_html = String::new();
 
+    let (modem_colour, modem_label, modem_detail) =
+        describe_modem(state.modem_health.read().await.as_ref());
+    // Colour matches the badge on the root page so the two agree at a glance.
+    let modem_status = format!(
+        r#"<span style="color: {}">{}</span> <span style="color: #6c757d">&mdash; {}</span>"#,
+        match modem_colour {
+            "success" => "#198754",
+            "warning" => "#fd7e14",
+            _ => "#dc3545",
+        },
+        html_escape(&modem_label),
+        html_escape(&modem_detail),
+    );
+
     let tls_status = if state.tls_enabled {
         "Enabled"
     } else {
@@ -585,6 +657,7 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
         <h2>Configuration</h2>
         <div class="stat"><span class="label">Version:</span> {version}{dirty_note}</div>
         <div class="stat"><span class="label">Modem URL:</span> {modem_url}</div>
+        <div class="stat"><span class="label">SIM / Signal:</span> {modem_status}</div>
         <div class="stat"><span class="label">TLS:</span> {tls_status}</div>
         {alert_html}
     </div>
@@ -611,6 +684,7 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
             ""
         },
         modem_url = html_escape(&state.modem_url),
+        modem_status = modem_status,
         tls_status = tls_status,
         alert_html = alert_html,
         uptime = uptime_str,
@@ -1010,6 +1084,70 @@ async fn poll_sms(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_describe_modem_healthy() {
+        let (colour, label, _) = describe_modem(Some(&modem::ModemHealth {
+            sim_state: modem::SIM_READY,
+            signal_bars: 4,
+        }));
+        assert_eq!(colour, "success");
+        assert!(label.contains("4 bars"), "unexpected label: {}", label);
+    }
+
+    #[test]
+    fn test_describe_modem_pin_locked() {
+        // The state the modem sat in from 2026-07-19 to 2026-07-27.
+        let (colour, label, detail) = describe_modem(Some(&modem::ModemHealth {
+            sim_state: 260,
+            signal_bars: 0,
+        }));
+        assert_eq!(colour, "danger");
+        assert!(
+            label.contains("PIN required"),
+            "unexpected label: {}",
+            label
+        );
+        assert!(detail.contains("260"));
+    }
+
+    #[test]
+    fn test_describe_modem_distinguishes_no_sim_from_puk() {
+        let no_sim = describe_modem(Some(&modem::ModemHealth {
+            sim_state: 255,
+            signal_bars: 0,
+        }));
+        let puk = describe_modem(Some(&modem::ModemHealth {
+            sim_state: 261,
+            signal_bars: 0,
+        }));
+        assert!(no_sim.1.contains("no SIM"), "got: {}", no_sim.1);
+        assert!(puk.1.contains("PUK"), "got: {}", puk.1);
+        assert_ne!(no_sim.1, puk.1);
+    }
+
+    #[test]
+    fn test_describe_modem_ready_but_unregistered() {
+        // Normal for ~60s after a modem restart, so it warns rather than errors.
+        let (colour, label, _) = describe_modem(Some(&modem::ModemHealth {
+            sim_state: modem::SIM_READY,
+            signal_bars: 0,
+        }));
+        assert_eq!(colour, "warning");
+        assert!(label.contains("No signal"), "unexpected label: {}", label);
+    }
+
+    #[test]
+    fn test_describe_modem_unreachable_is_distinct_from_bad_sim() {
+        let unreachable = describe_modem(None);
+        let bad_sim = describe_modem(Some(&modem::ModemHealth {
+            sim_state: 260,
+            signal_bars: 0,
+        }));
+        assert_eq!(unreachable.0, "danger");
+        assert!(unreachable.1.contains("unreachable"));
+        assert_ne!(unreachable.1, bad_sim.1);
+    }
+
     use super::*;
     use crate::metrics::setup_metrics;
     use axum::http::StatusCode;
