@@ -1,4 +1,4 @@
-use metrics::{Unit, describe_counter, describe_gauge, gauge};
+use metrics::{Unit, counter, describe_counter, describe_gauge, gauge};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -346,6 +346,18 @@ pub fn setup_metrics() -> PrometheusHandle {
 pub fn update_limits_metrics(hourly: u32, daily: u32) {
     gauge!("smser_hourly_limit").set(hourly as f64);
     gauge!("smser_daily_limit").set(daily as f64);
+
+    // Publish the usage metrics at zero so they exist from startup.
+    //
+    // The metrics crate only registers a metric on first use, and these are
+    // otherwise only touched when an SMS is sent -- so after a restart they
+    // disappeared from /metrics entirely until the next send. That leaves
+    // dashboards showing "No data" rather than zero, and makes the series
+    // unusable for alerting, since absent() cannot distinguish "no sends yet"
+    // from "exporter broken".
+    gauge!("smser_hourly_usage").set(0.0);
+    gauge!("smser_daily_usage").set(0.0);
+    counter!("smser_sms_sent_total").increment(0);
 }
 
 pub fn update_client_limits_metrics(client_limits: &[ClientLimit]) {
