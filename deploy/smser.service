@@ -1,14 +1,68 @@
+# EXAMPLE systemd unit for smser.
+#
+# Copy to /etc/systemd/system/smser.service and adjust for your host. Every
+# value below is a placeholder or a documented default -- nothing here is
+# specific to any particular deployment.
+#
+#   sudo cp smser.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now smser
+#
+# Secrets do NOT belong in this file. See the note on SMSER_ALERT_TO below.
+
 [Unit]
 Description=smser SMS Gateway
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=pi
+
+# A dedicated unprivileged user is preferable to running as `pi`. Create with:
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin smser
+# If the service serves TLS, add it to the group that can read the private key:
+#   sudo usermod -aG ssl-cert smser
+User=smser
+Group=smser
+
+# Minimal: plain HTTP on the chosen port.
 ExecStart=/usr/local/bin/smser serve --port 5566
+
+# For TLS, replace the line above with something like this. --redirect-host is
+# the public name clients use, so HTTP requests on --http-redirect-port are sent
+# to the right place:
+#
+# ExecStart=/usr/local/bin/smser serve --port 5566 \
+#     --tls-cert /etc/ssl/certs/YOUR_DOMAIN.fullchain.pem \
+#     --tls-key /etc/ssl/private/YOUR_DOMAIN.key.pem \
+#     --http-redirect-port 5567 \
+#     --redirect-host smser.example.com
+#
+# Other useful flags:
+#   --hourly-limit N / --daily-limit N   rate limits (default 100 / 1000)
+#   --client-limit name:hourly:daily     per-client limits
+#   --alert-receiver name:+number        route named Alertmanager receivers
+#   --log-sensitive false                keep phone numbers and message bodies
+#                                        out of the logs
+
 Restart=on-failure
+RestartSec=10
+
 Environment=RUST_LOG=info
+
+# Default gateway address of a Huawei E3372 in HiLink mode. Change if your modem
+# presents a different address.
 Environment=SMSER_MODEM_URL=http://192.168.8.1
+
+# SMSER_ALERT_TO -- the number Alertmanager alerts are sent to -- is deliberately
+# NOT set here, so this file can live in version control. Set it on the host:
+#
+#   sudo systemctl edit smser
+#
+# which writes /etc/systemd/system/smser.service.d/override.conf, e.g.
+#
+#   [Service]
+#   Environment=SMSER_ALERT_TO=+441234567890
 
 [Install]
 WantedBy=multi-user.target

@@ -237,6 +237,37 @@ The `/metrics` endpoint exports the following Prometheus metrics:
 *   `smser_hourly_limit` / `smser_daily_limit`: Configured global limits.
 *   `smser_client_hourly_usage{client="X"}` / `smser_client_daily_usage{client="X"}`: Per-client usage.
 *   `smser_client_hourly_limit{client="X"}` / `smser_client_daily_limit{client="X"}`: Per-client limits.
+*   `smser_modem_reachable`: Whether the modem HTTP API answered the last health probe.
+*   `smser_modem_sim_ready`: Whether the SIM is unlocked and usable.
+*   `smser_modem_sim_state`: Raw SIM state code (257 ready, 255 no SIM, 260 PIN required, 261 PUK required).
+*   `smser_modem_signal_bars`: Signal strength 0-5. Zero means not registered on a network.
+*   `smser_modem_last_probe_timestamp_seconds`: When the modem was last probed.
+*   `smser_version_info`: Version and git commit. A `-dirty` suffix means the binary
+    was built from a modified working tree.
+
+The modem metrics are probed on a timer independent of SMS traffic. That is
+deliberate: sends only happen when an alert fires, which can be weeks apart, so
+without an independent probe a modem that has silently stopped working is only
+discovered at the moment it is needed.
+
+## Deployment
+
+`deploy/` contains **examples**, not a working configuration — adjust them for
+your host:
+
+| File | Purpose |
+|------|---------|
+| `deploy/smser.service` | systemd unit. Shows a dedicated service user, optional TLS, and where secrets should live |
+| `deploy/smserprom.yml` | Prometheus alert rules for the rate limits |
+| `deploy/smserprom_test.yml` | promtool tests for those rules — `promtool test rules deploy/smserprom_test.yml` |
+
+**Keep secrets out of the unit file.** `SMSER_ALERT_TO` is the number alerts are
+sent to; set it on the host with `sudo systemctl edit smser`, which writes a
+drop-in override that is not version controlled.
+
+If the service serves TLS, it needs to read the private key — add its user to
+whichever group owns the key (commonly `ssl-cert`) rather than running it as
+root.
 
 ## License
 
