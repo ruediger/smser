@@ -19,6 +19,18 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[command(version, about, long_about = None)]
 pub struct Args {
     /// The URL of the modem (e.g., "http://192.168.8.1")
+    ///
+    /// HTTP, not HTTPS, and deliberately so: the Huawei E3372 in HiLink mode
+    /// serves its API on port 80 only. Port 443 is closed and TLS does not
+    /// negotiate, so there is no HTTPS to opt into. Code scanning flags the
+    /// resulting URLs (`rust/non-https-url`); the finding is accurate but not
+    /// actionable against this hardware.
+    ///
+    /// The exposure is bounded by the modem being link-local -- typically a
+    /// USB-attached CDC ethernet device, so the traffic never reaches a shared
+    /// network. If you point this at a modem across an untrusted network, that
+    /// reasoning no longer holds and the plaintext SMS content and phone
+    /// numbers are genuinely exposed.
     #[cfg(feature = "modem")]
     #[arg(long, default_value = "http://192.168.8.1", env = "SMSER_MODEM_URL")]
     pub modem_url: String,
