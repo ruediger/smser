@@ -52,6 +52,10 @@ pub struct Args {
 }
 
 #[derive(clap::Subcommand, Debug, PartialEq)]
+// Serve carries many more fields than Send, so the enum is sized by Serve.
+// Boxing would fix the lint at the cost of indirection in code that runs once
+// at startup and is never in a hot path or a collection.
+#[allow(clippy::large_enum_variant)]
 pub enum SmsCommand {
     /// Send an SMS message
     Send {
@@ -150,6 +154,47 @@ pub enum SmsCommand {
         /// Interval in seconds for polling new SMS messages (0 to disable)
         #[arg(long, default_value_t = 300, env = "SMSER_POLL_INTERVAL")]
         poll_interval: u64,
+
+        /// Sender whose messages carry the account balance, e.g. "7950014111".
+        ///
+        /// Substring match, so the national part covers replies arriving from
+        /// the international form. Required to enable balance tracking:
+        /// filtering by sender is what stops a stale message from a former
+        /// provider being read as a zero balance.
+        #[arg(long)]
+        balance_from: Option<String>,
+
+        /// Regex with one capture group holding the numeric balance, e.g.
+        /// `£([0-9]+\.[0-9]{2})`.
+        ///
+        /// Anchor it on the currency rather than the word "balance" -- in
+        /// "balance (last usage - 28-09-2026) was £10.00" the first number
+        /// after "balance" is the day of the month.
+        #[arg(long)]
+        balance_pattern: Option<String>,
+
+        /// Value of the `provider` metric label.
+        #[arg(long, default_value = "provider")]
+        balance_provider: String,
+
+        /// Value of the `currency` metric label. Not parsed from the message.
+        #[arg(long, default_value = "GBP")]
+        balance_currency: String,
+
+        /// Send a balance request to this number on a schedule. Omit for
+        /// passive operation: parse whatever arrives and never send, which
+        /// costs nothing. Note this is the number you text, which is often not
+        /// the number the reply comes from.
+        #[arg(long)]
+        balance_request_to: Option<String>,
+
+        /// Body of the scheduled request.
+        #[arg(long, default_value = "BALANCE")]
+        balance_request_text: String,
+
+        /// Days between scheduled requests.
+        #[arg(long, default_value_t = 7)]
+        balance_interval_days: u64,
     },
 }
 
@@ -387,6 +432,13 @@ pub async fn run() {
             redirect_host,
             log_sensitive,
             poll_interval,
+            balance_from,
+            balance_pattern,
+            balance_provider,
+            balance_currency,
+            balance_request_to,
+            balance_request_text,
+            balance_interval_days,
         } => {
             tracing_subscriber::registry()
                 .with(tracing_subscriber::EnvFilter::new(
@@ -416,6 +468,43 @@ pub async fn run() {
                 );
             }
 
+            // Balance tracking needs both a sender to trust and a pattern.
+            // Supplying one without the other is a configuration mistake worth
+            // refusing rather than silently ignoring.
+            let balance = match (balance_from, balance_pattern) {
+                (Some(from), Some(pat)) => match regex::Regex::new(&pat) {
+                    Ok(re) if re.captures_len() >= 2 => Some(crate::balance::BalanceConfig {
+                        from,
+                        pattern: re,
+                        provider: balance_provider,
+                        currency: balance_currency,
+                        request_to: balance_request_to,
+                        request_text: balance_request_text,
+                        interval: std::time::Duration::from_secs(
+                            balance_interval_days.saturating_mul(86_400),
+                        ),
+                    }),
+                    Ok(_) => {
+                        eprintln!(
+                            "Error: --balance-pattern must contain one capture group for the value, \
+                             e.g. '£([0-9]+\\.[0-9]{{2}})'"
+                        );
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!("Error: --balance-pattern is not a valid regex: {}", e);
+                        return;
+                    }
+                },
+                (None, None) => None,
+                _ => {
+                    eprintln!(
+                        "Error: --balance-from and --balance-pattern must be given together."
+                    );
+                    return;
+                }
+            };
+
             let handle = setup_metrics();
             update_limits_metrics(hourly_limit, daily_limit);
             update_client_limits_metrics(&client_limits);
@@ -440,7 +529,20 @@ pub async fn run() {
                 redirect_host,
                 log_sensitive,
                 poll_interval,
+                balance,
             };
+            if let Some(ref b) = config.balance {
+                if b.is_active() {
+                    println!(
+                        "Balance tracking: {} every {} day(s), replies from {}",
+                        b.request_text,
+                        b.interval.as_secs() / 86_400,
+                        b.from
+                    );
+                } else {
+                    println!("Balance tracking: passive, parsing replies from {}", b.from);
+                }
+            }
             if poll_interval > 0 {
                 println!("SMS polling enabled: every {} seconds", poll_interval);
             } else {

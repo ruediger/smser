@@ -333,6 +333,31 @@ pub fn setup_metrics() -> PrometheusHandle {
                 "Modem signal strength, 0-5. Zero means not registered on a network"
             );
             describe_gauge!(
+                "smser_account_balance",
+                Unit::Count,
+                "Account balance as reported by the provider over SMS, labelled by provider and currency"
+            );
+            describe_gauge!(
+                "smser_account_balance_timestamp_seconds",
+                Unit::Seconds,
+                "Unix time the balance was last successfully parsed. A balance that stops                  advancing looks healthy and is not"
+            );
+            describe_counter!(
+                "smser_balance_requests_sent_total",
+                Unit::Count,
+                "Balance request messages sent"
+            );
+            describe_counter!(
+                "smser_balance_replies_parsed_total",
+                Unit::Count,
+                "Balance values successfully parsed from provider replies"
+            );
+            describe_counter!(
+                "smser_balance_parse_failures_total",
+                Unit::Count,
+                "Messages from the balance sender that did not match the configured pattern"
+            );
+            describe_gauge!(
                 "smser_modem_last_probe_timestamp_seconds",
                 Unit::Seconds,
                 "Unix time of the last completed modem health probe"
