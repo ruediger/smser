@@ -59,6 +59,8 @@ pub struct ServerConfig {
     pub log_sensitive: bool,
     /// Interval in seconds for polling new SMS messages (0 to disable)
     pub poll_interval: u64,
+    /// Account balance tracking, `None` when not configured.
+    pub balance: Option<crate::balance::BalanceConfig>,
 }
 
 #[derive(Clone)]
@@ -76,6 +78,15 @@ struct AppState {
     /// Result of the most recent modem health probe. `None` before the first
     /// probe completes, or when the modem could not be reached.
     modem_health: Arc<RwLock<Option<modem::ModemHealth>>>,
+    /// Balance configuration and the last value parsed, for the status page.
+    balance: Option<Arc<BalanceState>>,
+}
+
+/// Shared balance state. The value is whatever the SMS poll last parsed.
+struct BalanceState {
+    config: crate::balance::BalanceConfig,
+    value: RwLock<Option<(f64, f64)>>, // (value, unix timestamp)
+    parse_failures: std::sync::atomic::AtomicU64,
 }
 
 use std::sync::Arc;
@@ -108,6 +119,13 @@ pub async fn start_server(
 
     let tls_enabled = config.tls_cert.is_some() && config.tls_key.is_some();
     let modem_health: Arc<RwLock<Option<modem::ModemHealth>>> = Arc::new(RwLock::new(None));
+    let balance_state: Option<Arc<BalanceState>> = config.balance.clone().map(|c| {
+        Arc::new(BalanceState {
+            config: c,
+            value: RwLock::new(None),
+            parse_failures: std::sync::atomic::AtomicU64::new(0),
+        })
+    });
     let app_state = AppState {
         modem_url: config.modem_url.clone(),
         rate_limiter: config.rate_limiter,
@@ -120,6 +138,7 @@ pub async fn start_server(
         tls_enabled,
         log_sensitive: config.log_sensitive,
         modem_health: modem_health.clone(),
+        balance: balance_state.clone(),
     };
 
     let app = Router::new()
@@ -148,6 +167,7 @@ pub async fn start_server(
         let poll_modem_url = config.modem_url.clone();
         let poll_interval_secs = config.poll_interval;
         let log_sensitive = config.log_sensitive;
+        let poll_balance = balance_state.clone();
         let mut poll_shutdown_rx = shutdown_rx.clone();
         tokio::spawn(async move {
             let mut last_seen_index: Option<i32> = None;
@@ -164,7 +184,7 @@ pub async fn start_server(
                     }
                     _ = tokio::time::sleep(std::time::Duration::from_secs(next_delay_secs)) => {
                         info!("Polling for new SMS messages...");
-                        match poll_sms(&poll_modem_url, log_sensitive, last_seen_index).await {
+                        match poll_sms(&poll_modem_url, log_sensitive, last_seen_index, poll_balance.as_ref()).await {
                             Ok((count, new_last_seen, logged)) => {
                                 last_seen_index = new_last_seen;
                                 consecutive_errors = 0;
@@ -189,6 +209,69 @@ pub async fn start_server(
                 }
             }
         });
+    }
+
+    // Scheduled balance request.
+    //
+    // Deliberately does NOT go through the rate limiter. The limiter exists to
+    // stop a runaway loop burning credit; this task sends one message per
+    // configured interval from a fixed timer, so it cannot run away. More
+    // importantly, the balance check is what warns that credit is running out --
+    // having it suppressed because alerts had already consumed the quota would
+    // defeat its purpose at exactly the moment it matters.
+    //
+    // It is still counted in smser_sms_sent_total, so accounting of what left
+    // the modem stays honest, plus its own counter.
+    if let Some(state) = balance_state.clone().filter(|s| s.config.is_active()) {
+        {
+            let bal_modem_url = config.modem_url.clone();
+            let mut bal_shutdown_rx = shutdown_rx.clone();
+            tokio::spawn(async move {
+                let cfg = &state.config;
+                let to = cfg.request_to.clone().expect("is_active checked above");
+                // Small initial delay so a restart loop cannot send repeatedly.
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                loop {
+                    match modem::get_session_info(&bal_modem_url).await {
+                        Ok((session_id, token)) => {
+                            match modem::send_sms(
+                                &bal_modem_url,
+                                &session_id,
+                                &token,
+                                &to,
+                                &cfg.request_text,
+                                false,
+                            )
+                            .await
+                            {
+                                Ok(()) => {
+                                    info!("Balance request sent to {} for {}", to, cfg.provider);
+                                    crate::balance::record_request_sent();
+                                    counter!("smser_sms_sent_total").increment(1);
+                                    let cc = extract_country_code(&to);
+                                    counter!("smser_sms_country_total", "country_code" => cc)
+                                        .increment(1);
+                                }
+                                Err(e) => {
+                                    warn!("Balance request failed to send: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => warn!("Balance request could not reach the modem: {}", e),
+                    }
+
+                    tokio::select! {
+                        _ = bal_shutdown_rx.changed() => {
+                            if *bal_shutdown_rx.borrow() {
+                                info!("Balance request task stopped");
+                                break;
+                            }
+                        }
+                        _ = tokio::time::sleep(cfg.interval) => {}
+                    }
+                }
+            });
+        }
     }
 
     // Modem health probe.
@@ -319,6 +402,19 @@ pub async fn start_server(
             .await
             .unwrap();
     }
+}
+
+/// Render a unix timestamp as an age, e.g. "3h 12m ago".
+fn format_age(ts: f64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    let age = now - ts;
+    if age < 0.0 {
+        return "just now".to_string();
+    }
+    format_uptime(std::time::Duration::from_secs_f64(age)) + " ago"
 }
 
 fn html_escape(s: &str) -> String {
@@ -631,6 +727,60 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
         html_escape(&modem_detail),
     );
 
+    // Omitted entirely when balance tracking is not configured, rather than
+    // shown as an empty or "n/a" row.
+    let balance_row = match state.balance.as_ref() {
+        None => String::new(),
+        Some(bal) => {
+            let cfg = &bal.config;
+            let snapshot = *bal.value.read().await;
+            let failures = bal
+                .parse_failures
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let mode = if cfg.is_active() {
+                format!("every {} day(s)", cfg.interval.as_secs() / 86_400)
+            } else {
+                "passive".to_string()
+            };
+            let value = match snapshot {
+                Some((v, ts)) => format!(
+                    r#"<span style="color: {}">{:.2} {}</span> <span style="color: #6c757d">&mdash; {}, updated {}</span>"#,
+                    // Colour is a hint only; the number and age are the signal.
+                    if v < 2.0 {
+                        "#dc3545"
+                    } else if v < 5.0 {
+                        "#fd7e14"
+                    } else {
+                        "#198754"
+                    },
+                    v,
+                    html_escape(&cfg.currency),
+                    html_escape(&mode),
+                    format_age(ts),
+                ),
+                None => format!(
+                    r#"<span style="color: #6c757d">no balance parsed yet &mdash; {}, watching {}</span>"#,
+                    html_escape(&mode),
+                    html_escape(&cfg.from),
+                ),
+            };
+            let warn = if failures > 0 {
+                format!(
+                    r#" <span style="color: #fd7e14">({} unparsed message(s))</span>"#,
+                    failures
+                )
+            } else {
+                String::new()
+            };
+            format!(
+                r#"        <div class="stat"><span class="label">Balance ({}):</span> {}{}</div>"#,
+                html_escape(&cfg.provider),
+                value,
+                warn
+            )
+        }
+    };
+
     let tls_status = if state.tls_enabled {
         "Enabled"
     } else {
@@ -658,6 +808,7 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
         <div class="stat"><span class="label">Version:</span> {version}{dirty_note}</div>
         <div class="stat"><span class="label">Modem URL:</span> {modem_url}</div>
         <div class="stat"><span class="label">SIM / Signal:</span> {modem_status}</div>
+        {balance_row}
         <div class="stat"><span class="label">TLS:</span> {tls_status}</div>
         {alert_html}
     </div>
@@ -685,6 +836,7 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
         },
         modem_url = html_escape(&state.modem_url),
         modem_status = modem_status,
+        balance_row = balance_row,
         tls_status = tls_status,
         alert_html = alert_html,
         uptime = uptime_str,
@@ -1034,6 +1186,7 @@ async fn poll_sms(
     modem_url: &str,
     log_sensitive: bool,
     last_seen_index: Option<i32>,
+    balance: Option<&Arc<BalanceState>>,
 ) -> Result<(i32, Option<i32>, usize), ModemError> {
     let (session_id, token) = modem::get_session_info(modem_url).await?;
 
@@ -1075,6 +1228,41 @@ async fn poll_sms(
             }
             if new_last_seen.is_none_or(|last| msg.index > last) {
                 new_last_seen = Some(msg.index);
+            }
+        }
+    }
+
+    // Passive balance parse. Runs over the whole inbox rather than only new
+    // messages, so a restart recovers the last known balance from history
+    // instead of waiting for the next provider reply -- which may be a week.
+    if let Some(state) = balance {
+        let cfg = &state.config;
+        match crate::balance::latest_balance(cfg, &response.messages.message) {
+            Some(v) => {
+                let previous = state.value.read().await.map(|(val, _)| val);
+                if previous != Some(v) {
+                    crate::balance::record_balance(cfg, v);
+                }
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or(0.0);
+                *state.value.write().await = Some((v, now));
+            }
+            None => {
+                // Only a failure if the sender wrote to us at all; otherwise
+                // there is simply nothing to parse yet.
+                if let Some(m) = response
+                    .messages
+                    .message
+                    .iter()
+                    .find(|m| m.phone.contains(&cfg.from))
+                {
+                    state
+                        .parse_failures
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    crate::balance::record_parse_failure(cfg, &m.content);
+                }
             }
         }
     }
@@ -1190,6 +1378,7 @@ mod tests {
                 redirect_host: None,
                 log_sensitive: true,
                 poll_interval: 0,
+                balance: None,
             };
             start_server(listener, rx, config).await;
         });
@@ -1238,6 +1427,7 @@ mod tests {
                 redirect_host: None,
                 log_sensitive: true,
                 poll_interval: 0,
+                balance: None,
             };
             start_server(listener, rx, config).await;
         });
@@ -1289,6 +1479,7 @@ mod tests {
                 redirect_host: None,
                 log_sensitive: true,
                 poll_interval: 0,
+                balance: None,
             };
             start_server(listener, rx, config).await;
         });
@@ -1335,6 +1526,7 @@ mod tests {
                 redirect_host: None,
                 log_sensitive: true,
                 poll_interval: 0,
+                balance: None,
             };
             start_server(listener, rx, config).await;
         });
@@ -1402,6 +1594,7 @@ mod tests {
                 redirect_host: None,
                 log_sensitive: true,
                 poll_interval: 0,
+                balance: None,
             };
             start_server(listener, rx, config).await;
         });
@@ -1482,6 +1675,7 @@ mod tests {
                 redirect_host: None,
                 log_sensitive: true,
                 poll_interval: 0,
+                balance: None,
             };
             start_server(listener, rx, config).await;
         });
@@ -1549,6 +1743,7 @@ mod tests {
                 redirect_host: None,
                 log_sensitive: true,
                 poll_interval: 0,
+                balance: None,
             };
             start_server(listener, rx, config).await;
         });
