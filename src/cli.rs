@@ -471,6 +471,7 @@ pub async fn run() {
             // Balance tracking needs both a sender to trust and a pattern.
             // Supplying one without the other is a configuration mistake worth
             // refusing rather than silently ignoring.
+            #[cfg(feature = "server")]
             let balance = match (balance_from, balance_pattern) {
                 (Some(from), Some(pat)) => match regex::Regex::new(&pat) {
                     Ok(re) if re.captures_len() >= 2 => Some(crate::balance::BalanceConfig {
