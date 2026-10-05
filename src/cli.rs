@@ -5,7 +5,7 @@ use crate::metrics::{
 #[cfg(feature = "modem")]
 use crate::modem;
 use crate::types::{BoxType, SmsMessage, SortType};
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches, Parser};
 use serde_json;
 #[cfg(feature = "server")]
 use std::net::SocketAddr;
@@ -222,8 +222,88 @@ fn parse_alert_receiver(s: &str) -> Result<(String, String), String> {
     Ok((name, phone))
 }
 
+/// Flags whose values are phone numbers. Masked on `/flags` unless
+/// `--log-sensitive` is on.
+#[cfg(feature = "server")]
+const SENSITIVE_FLAGS: &[&str] = &[
+    "alert_to",
+    "alert_receivers",
+    "balance_from",
+    "balance_request_to",
+];
+
+/// Resolve every global and `serve` flag to its effective value and the
+/// source of that value, for the `/flags` page.
+///
+/// Iterates clap's own argument list rather than the parsed struct so new
+/// flags show up without touching this function, and so feature-gated flags
+/// are handled by whatever clap was built with.
+#[cfg(feature = "server")]
+fn collect_flags(matches: &clap::ArgMatches, log_sensitive: bool) -> Vec<crate::server::Flag> {
+    use clap::parser::ValueSource;
+
+    let cmd = Args::command();
+    let serve_cmd = cmd
+        .find_subcommand("serve")
+        .expect("serve subcommand exists");
+    let serve_matches = matches
+        .subcommand_matches("serve")
+        .expect("called only for serve");
+
+    let mut flags = Vec::new();
+    for (cmd, matches) in [(&cmd, matches), (serve_cmd, serve_matches)] {
+        for arg in cmd.get_arguments() {
+            let id = arg.get_id().as_str();
+            if matches!(id, "help" | "version") {
+                continue;
+            }
+            let mask = !log_sensitive && SENSITIVE_FLAGS.contains(&id);
+            let value = matches.get_raw(id).map(|values| {
+                values
+                    .map(|v| {
+                        let v = v.to_string_lossy();
+                        if !mask {
+                            v.into_owned()
+                        } else if id == "alert_receivers" {
+                            // Keep the receiver name, it is what makes the
+                            // endpoint identifiable.
+                            match v.split_once(':') {
+                                Some((name, _)) => format!("{}:(hidden)", name),
+                                None => "(hidden)".to_string(),
+                            }
+                        } else {
+                            "(hidden)".to_string()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            });
+            let source = match matches.value_source(id) {
+                Some(ValueSource::CommandLine) => "command line".to_string(),
+                Some(ValueSource::EnvVariable) => match arg.get_env() {
+                    Some(env) => format!("env {}", env.to_string_lossy()),
+                    None => "env".to_string(),
+                },
+                Some(ValueSource::DefaultValue) => "default".to_string(),
+                Some(_) => "other".to_string(),
+                None => "unset".to_string(),
+            };
+            flags.push(crate::server::Flag {
+                name: arg
+                    .get_long()
+                    .map(|l| format!("--{}", l))
+                    .unwrap_or_else(|| id.to_string()),
+                value,
+                source,
+            });
+        }
+    }
+    flags
+}
+
 pub async fn run() {
-    let args = Args::parse();
+    let matches = Args::command().get_matches();
+    let args = Args::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
 
     match args.command {
         SmsCommand::Send {
@@ -531,6 +611,7 @@ pub async fn run() {
                 log_sensitive,
                 poll_interval,
                 balance,
+                flags: collect_flags(&matches, log_sensitive),
             };
             if let Some(ref b) = config.balance {
                 if b.is_active() {
@@ -556,7 +637,7 @@ pub async fn run() {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "modem")]
+    #[cfg(any(feature = "modem", feature = "server"))]
     use super::*;
     #[cfg(feature = "modem")]
     use crate::modem;
@@ -862,5 +943,61 @@ mod tests {
         )
         .await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    fn test_collect_flags_sources_and_masking() {
+        let argv = vec![
+            "smser",
+            "serve",
+            "--hourly-limit",
+            "5",
+            "--balance-from",
+            "7950014111",
+        ];
+        #[cfg(feature = "alertmanager")]
+        let argv = [argv, vec!["--alert-receiver", "ops:+441234"]].concat();
+        let matches = Args::command().try_get_matches_from(argv).unwrap();
+        let find = |flags: &[crate::server::Flag], name: &str| {
+            flags
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("{} missing", name))
+                .clone()
+        };
+
+        let flags = collect_flags(&matches, false);
+        assert!(flags.iter().all(|f| f.name != "--help"));
+        let hourly = find(&flags, "--hourly-limit");
+        assert_eq!(hourly.value.as_deref(), Some("5"));
+        assert_eq!(hourly.source, "command line");
+        let daily = find(&flags, "--daily-limit");
+        assert_eq!(daily.value.as_deref(), Some("1000"));
+        assert_eq!(daily.source, "default");
+        let tls = find(&flags, "--tls-cert");
+        assert_eq!(tls.value, None);
+        assert_eq!(tls.source, "unset");
+        assert!(flags.iter().any(|f| f.name == "--modem-url"));
+        assert_eq!(
+            find(&flags, "--balance-from").value.as_deref(),
+            Some("(hidden)")
+        );
+        #[cfg(feature = "alertmanager")]
+        assert_eq!(
+            find(&flags, "--alert-receiver").value.as_deref(),
+            Some("ops:(hidden)")
+        );
+
+        let flags = collect_flags(&matches, true);
+        assert_eq!(
+            find(&flags, "--balance-from").value.as_deref(),
+            Some("7950014111")
+        );
+        #[cfg(feature = "alertmanager")]
+        assert_eq!(
+            find(&flags, "--alert-receiver").value.as_deref(),
+            Some("ops:+441234")
+        );
     }
 }

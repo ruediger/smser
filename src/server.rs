@@ -61,6 +61,23 @@ pub struct ServerConfig {
     pub poll_interval: u64,
     /// Account balance tracking, `None` when not configured.
     pub balance: Option<crate::balance::BalanceConfig>,
+    /// Effective command-line flags, shown on `/flags`.
+    pub flags: Vec<Flag>,
+}
+
+/// One command-line flag as resolved at startup, for the `/flags` page.
+///
+/// Sensitive values are masked before they get here, so this is safe to
+/// render as-is.
+#[derive(Clone, Debug, Serialize)]
+pub struct Flag {
+    /// The flag as typed, e.g. `--hourly-limit`.
+    pub name: String,
+    /// The value, `None` when the flag is unset and has no default.
+    pub value: Option<String>,
+    /// Where the value came from: "command line", "env SMSER_...", "default",
+    /// or "unset".
+    pub source: String,
 }
 
 #[derive(Clone)]
@@ -80,6 +97,7 @@ struct AppState {
     modem_health: Arc<RwLock<Option<modem::ModemHealth>>>,
     /// Balance configuration and the last value parsed, for the status page.
     balance: Option<Arc<BalanceState>>,
+    flags: Arc<Vec<Flag>>,
 }
 
 /// Shared balance state. The value is whatever the SMS poll last parsed.
@@ -139,6 +157,7 @@ pub async fn start_server(
         log_sensitive: config.log_sensitive,
         modem_health: modem_health.clone(),
         balance: balance_state.clone(),
+        flags: Arc::new(config.flags),
     };
 
     let app = Router::new()
@@ -147,7 +166,8 @@ pub async fn start_server(
         .route("/get-sms", get(get_sms_handler))
         .route("/metrics", get(metrics_handler))
         .route("/status", get(status_handler))
-        .route("/statusz", get(status_handler));
+        .route("/statusz", get(status_handler))
+        .route("/flags", get(flags_handler));
 
     #[cfg(feature = "alertmanager")]
     let app = app
@@ -415,6 +435,12 @@ fn format_age(ts: f64) -> String {
         return "just now".to_string();
     }
     format_uptime(std::time::Duration::from_secs_f64(age)) + " ago"
+}
+
+/// Hide a phone number on the web pages unless `--log-sensitive` is on,
+/// matching what `/flags` does for the same values.
+fn mask_sensitive(s: &str, log_sensitive: bool) -> &str {
+    if log_sensitive { s } else { "(hidden)" }
 }
 
 fn html_escape(s: &str) -> String {
@@ -690,7 +716,7 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
         let mut html = match &state.alert_phone_number {
             Some(phone) => format!(
                 r#"<div class="stat"><span class="label">Alert Recipient:</span> {}</div>"#,
-                html_escape(phone)
+                html_escape(mask_sensitive(phone, state.log_sensitive))
             ),
             None => String::from(
                 r#"<div class="stat"><span class="label">Alert Recipient:</span> <em>Not configured</em></div>"#,
@@ -704,7 +730,7 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
                 html.push_str(&format!(
                     r#"<div class="stat"><span class="label">Alert Receiver '{}':</span> {}</div>"#,
                     html_escape(name),
-                    html_escape(phone)
+                    html_escape(mask_sensitive(phone, state.log_sensitive))
                 ));
             }
         }
@@ -761,7 +787,7 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
                 None => format!(
                     r#"<span style="color: #6c757d">no balance parsed yet &mdash; {}, watching {}</span>"#,
                     html_escape(&mode),
-                    html_escape(&cfg.from),
+                    html_escape(mask_sensitive(&cfg.from, state.log_sensitive)),
                 ),
             };
             let warn = if failures > 0 {
@@ -811,6 +837,7 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
         {balance_row}
         <div class="stat"><span class="label">TLS:</span> {tls_status}</div>
         {alert_html}
+        <div class="stat"><a href="/flags">All flags</a></div>
     </div>
     <div class="card">
         <h2>Status</h2>
@@ -847,6 +874,72 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
         client_limits_html = client_limits_html
     );
     Html(html)
+}
+
+#[derive(Debug, Deserialize)]
+struct FlagsQuery {
+    #[serde(default)]
+    format: Option<String>,
+}
+
+async fn flags_handler(
+    State(state): State<AppState>,
+    Query(query): Query<FlagsQuery>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    counter!("smser_http_requests_total", "endpoint" => "/flags").increment(1);
+
+    if query.format.as_deref() == Some("json") {
+        return Json(state.flags.as_ref()).into_response();
+    }
+
+    let mut rows = String::new();
+    for flag in state.flags.iter() {
+        let value = match &flag.value {
+            Some(v) => format!("<code>{}</code>", html_escape(v)),
+            None => r#"<em style="color: #6c757d">unset</em>"#.to_string(),
+        };
+        rows.push_str(&format!(
+            r#"<tr style="border-bottom: 1px solid #eee;">
+                <td style="padding: 0.5rem;"><code>{}</code></td>
+                <td style="padding: 0.5rem;">{}</td>
+                <td style="padding: 0.5rem; color: #6c757d;">{}</td>
+            </tr>"#,
+            html_escape(&flag.name),
+            value,
+            html_escape(&flag.source),
+        ));
+    }
+
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html>
+<head>
+    <title>SMS Server Flags</title>
+    <style>
+        body {{ font-family: sans-serif; margin: 2rem; background: #f5f5f5; }}
+        h1 {{ color: #333; }}
+        .card {{ background: white; border: 1px solid #ddd; padding: 1rem; border-radius: 4px; margin-bottom: 1rem; }}
+    </style>
+</head>
+<body>
+    <h1>SMS Server Flags</h1>
+    <div class="card">
+        <table style="width: 100%; border-collapse: collapse;">
+            <tr style="border-bottom: 1px solid #ddd;">
+                <th style="text-align: left; padding: 0.5rem;">Flag</th>
+                <th style="text-align: left; padding: 0.5rem;">Value</th>
+                <th style="text-align: left; padding: 0.5rem;">Source</th>
+            </tr>
+            {rows}
+        </table>
+    </div>
+    <p><a href="/status">Status</a> &middot; <a href="/flags?format=json">JSON</a></p>
+</body>
+</html>"#,
+        rows = rows
+    );
+    Html(html).into_response()
 }
 
 fn format_uptime(duration: std::time::Duration) -> String {
@@ -1379,6 +1472,7 @@ mod tests {
                 log_sensitive: true,
                 poll_interval: 0,
                 balance: None,
+                flags: Vec::new(),
             };
             start_server(listener, rx, config).await;
         });
@@ -1428,6 +1522,7 @@ mod tests {
                 log_sensitive: true,
                 poll_interval: 0,
                 balance: None,
+                flags: Vec::new(),
             };
             start_server(listener, rx, config).await;
         });
@@ -1480,6 +1575,7 @@ mod tests {
                 log_sensitive: true,
                 poll_interval: 0,
                 balance: None,
+                flags: Vec::new(),
             };
             start_server(listener, rx, config).await;
         });
@@ -1498,6 +1594,125 @@ mod tests {
         assert!(body.contains("SMS Server Status"));
         assert!(body.contains("Modem URL:</span> http://localhost:8080"));
         assert!(body.contains("Hourly Usage:</span> 0 / 100"));
+
+        tx.send(()).unwrap();
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "alertmanager")]
+    async fn test_status_masks_phone_numbers() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let server_handle = tokio::spawn(async move {
+            let handle = setup_metrics();
+            let rate_limiter = RateLimiter::new(100, 1000, vec![]);
+            let config = ServerConfig {
+                modem_url: "http://localhost:8080".to_string(),
+                prometheus_handle: handle,
+                rate_limiter,
+                alert_phone_number: Some("+441234567890".to_string()),
+                alert_receivers: HashMap::from([("ops".to_string(), "+449876543210".to_string())]),
+                tls_cert: None,
+                tls_key: None,
+                http_redirect_port: None,
+                redirect_host: None,
+                log_sensitive: false,
+                poll_interval: 0,
+                balance: None,
+                flags: Vec::new(),
+            };
+            start_server(listener, rx, config).await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let body = Client::new()
+            .get(format!("http://127.0.0.1:{}/status", port))
+            .send()
+            .await
+            .expect("Failed to send request")
+            .text()
+            .await
+            .unwrap();
+        assert!(!body.contains("+441234567890"));
+        assert!(!body.contains("+449876543210"));
+        assert!(body.contains("Alert Recipient:</span> (hidden)"));
+        assert!(body.contains("Alert Receiver 'ops':</span> (hidden)"));
+
+        tx.send(()).unwrap();
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_flags_endpoint() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let server_handle = tokio::spawn(async move {
+            let handle = setup_metrics();
+            let rate_limiter = RateLimiter::new(100, 1000, vec![]);
+            let config = ServerConfig {
+                modem_url: "http://localhost:8080".to_string(),
+                prometheus_handle: handle,
+                rate_limiter,
+                #[cfg(feature = "alertmanager")]
+                alert_phone_number: None,
+                #[cfg(feature = "alertmanager")]
+                alert_receivers: HashMap::new(),
+                tls_cert: None,
+                tls_key: None,
+                http_redirect_port: None,
+                redirect_host: None,
+                log_sensitive: true,
+                poll_interval: 0,
+                balance: None,
+                flags: vec![
+                    Flag {
+                        name: "--hourly-limit".to_string(),
+                        value: Some("5".to_string()),
+                        source: "command line".to_string(),
+                    },
+                    Flag {
+                        name: "--tls-cert".to_string(),
+                        value: None,
+                        source: "unset".to_string(),
+                    },
+                ],
+            };
+            start_server(listener, rx, config).await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let client = Client::new();
+        let body = client
+            .get(format!("http://127.0.0.1:{}/flags", port))
+            .send()
+            .await
+            .expect("Failed to send request")
+            .text()
+            .await
+            .unwrap();
+        assert!(body.contains("<code>--hourly-limit</code>"));
+        assert!(body.contains("<code>5</code>"));
+        assert!(body.contains("command line"));
+
+        let json: serde_json::Value = client
+            .get(format!("http://127.0.0.1:{}/flags?format=json", port))
+            .send()
+            .await
+            .expect("Failed to send request")
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(json[0]["name"], "--hourly-limit");
+        assert_eq!(json[0]["value"], "5");
+        assert!(json[1]["value"].is_null());
+        assert_eq!(json[1]["source"], "unset");
 
         tx.send(()).unwrap();
         server_handle.await.unwrap();
@@ -1527,6 +1742,7 @@ mod tests {
                 log_sensitive: true,
                 poll_interval: 0,
                 balance: None,
+                flags: Vec::new(),
             };
             start_server(listener, rx, config).await;
         });
@@ -1595,6 +1811,7 @@ mod tests {
                 log_sensitive: true,
                 poll_interval: 0,
                 balance: None,
+                flags: Vec::new(),
             };
             start_server(listener, rx, config).await;
         });
@@ -1676,6 +1893,7 @@ mod tests {
                 log_sensitive: true,
                 poll_interval: 0,
                 balance: None,
+                flags: Vec::new(),
             };
             start_server(listener, rx, config).await;
         });
@@ -1744,6 +1962,7 @@ mod tests {
                 log_sensitive: true,
                 poll_interval: 0,
                 balance: None,
+                flags: Vec::new(),
             };
             start_server(listener, rx, config).await;
         });
