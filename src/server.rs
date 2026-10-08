@@ -167,7 +167,9 @@ pub async fn start_server(
         .route("/metrics", get(metrics_handler))
         .route("/status", get(status_handler))
         .route("/statusz", get(status_handler))
-        .route("/flags", get(flags_handler));
+        .route("/flags", get(flags_handler))
+        .route("/health", get(health_handler))
+        .route("/health/modem", get(modem_health_handler));
 
     #[cfg(feature = "alertmanager")]
     let app = app
@@ -665,6 +667,38 @@ fn extract_country_code(phone: &str) -> String {
         phone.chars().take(4).collect()
     } else {
         "unknown".to_string()
+    }
+}
+
+/// Liveness: answers whenever the process is serving requests.
+///
+/// Deliberately independent of the modem. Deploys use this to decide whether
+/// to roll back, and a new binary cannot fix a SIM or signal problem; modem
+/// state is exported as metrics and served on `/health/modem` instead.
+async fn health_handler() -> &'static str {
+    counter!("smser_http_requests_total", "endpoint" => "/health").increment(1);
+    "OK"
+}
+
+/// Whether SMS can currently be sent: 200 when the SIM is ready and the modem
+/// is registered on a network, 503 otherwise.
+///
+/// Serves the result of the background probe rather than querying the modem,
+/// so it can be up to `MODEM_HEALTH_INTERVAL_SECS` stale.
+async fn modem_health_handler(State(state): State<AppState>) -> (StatusCode, String) {
+    counter!("smser_http_requests_total", "endpoint" => "/health/modem").increment(1);
+    modem_health_response(state.modem_health.read().await.as_ref())
+}
+
+fn modem_health_response(health: Option<&modem::ModemHealth>) -> (StatusCode, String) {
+    let (colour, label, detail) = describe_modem(health);
+    if colour == "success" {
+        (StatusCode::OK, format!("OK: {}\n", label))
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("UNHEALTHY: {}. {}\n", label, detail),
+        )
     }
 }
 
@@ -1365,6 +1399,89 @@ async fn poll_sms(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_modem_health_response() {
+        let (status, body) = modem_health_response(Some(&modem::ModemHealth {
+            sim_state: modem::SIM_READY,
+            signal_bars: 4,
+        }));
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "OK: SIM ready, 4 bars\n");
+
+        // No signal means no SMS, so it counts as unhealthy, not a warning.
+        let (status, body) = modem_health_response(Some(&modem::ModemHealth {
+            sim_state: modem::SIM_READY,
+            signal_bars: 0,
+        }));
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(body.starts_with("UNHEALTHY: No signal"), "{}", body);
+
+        let (status, body) = modem_health_response(Some(&modem::ModemHealth {
+            sim_state: 260,
+            signal_bars: 4,
+        }));
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(body.contains("SIM PIN required"), "{}", body);
+
+        let (status, body) = modem_health_response(None);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(body.contains("Modem unreachable"), "{}", body);
+    }
+
+    #[tokio::test]
+    async fn test_health_endpoints() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let server_handle = tokio::spawn(async move {
+            let handle = setup_metrics();
+            let rate_limiter = RateLimiter::new(100, 1000, vec![]);
+            let config = ServerConfig {
+                // Nothing listens here, so the modem probe fails.
+                modem_url: "http://127.0.0.1:1".to_string(),
+                prometheus_handle: handle,
+                rate_limiter,
+                #[cfg(feature = "alertmanager")]
+                alert_phone_number: None,
+                #[cfg(feature = "alertmanager")]
+                alert_receivers: HashMap::new(),
+                tls_cert: None,
+                tls_key: None,
+                http_redirect_port: None,
+                redirect_host: None,
+                log_sensitive: true,
+                poll_interval: 0,
+                balance: None,
+                flags: Vec::new(),
+            };
+            start_server(listener, rx, config).await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let client = Client::new();
+        // Liveness stays up even though the modem is unreachable.
+        let response = client
+            .get(format!("http://127.0.0.1:{}/health", port))
+            .send()
+            .await
+            .expect("Failed to send request");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(response.text().await.unwrap(), "OK");
+
+        let response = client
+            .get(format!("http://127.0.0.1:{}/health/modem", port))
+            .send()
+            .await
+            .expect("Failed to send request");
+        assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        assert!(response.text().await.unwrap().contains("Modem unreachable"));
+
+        tx.send(()).unwrap();
+        server_handle.await.unwrap();
+    }
+
     #[test]
     fn test_describe_modem_healthy() {
         let (colour, label, _) = describe_modem(Some(&modem::ModemHealth {
