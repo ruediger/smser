@@ -120,6 +120,9 @@ When running in server mode (`smser serve`), the following endpoints are availab
     *   Params: `count` (default 20), `box_type` (default LocalInbox).
 *   **`GET /metrics`**: Prometheus metrics endpoint.
 *   **`GET /status`**: HTML status dashboard.
+*   **`GET /flags`**: Every flag with its effective value and source (command line, env var, default). `?format=json` for JSON. Phone numbers are hidden unless `--log-sensitive` is on.
+*   **`GET /health`**: Liveness check, returns `OK` whenever the server is up. Independent of the modem.
+*   **`GET /health/modem`**: `200` when the SIM is ready and registered on a network, `503` with the reason otherwise. Served from the background probe (every 5 minutes), not a live query.
 *   **`POST /alertmanager`**: Prometheus Alert Manager [webhook handler](https://prometheus.io/docs/alerting/latest/configuration/#webhook_config).
     *   Accepts standard Alert Manager JSON.
     *   Formats and sends alerts as SMS to the number configured via `--alert-to`.
