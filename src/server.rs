@@ -100,10 +100,15 @@ struct AppState {
     flags: Arc<Vec<Flag>>,
 }
 
-/// Shared balance state. The value is whatever the SMS poll last parsed.
+/// Shared balance state.
+///
+/// `observed` holds the last balance parsed together with the moment the
+/// *reply it came from* was first seen. It is not refreshed when the same
+/// message is re-parsed on a later poll, so the status page reports the age of
+/// the figure rather than the age of the last read.
 struct BalanceState {
     config: crate::balance::BalanceConfig,
-    value: RwLock<Option<(f64, f64)>>, // (value, unix timestamp)
+    observed: RwLock<Option<(crate::balance::ParsedBalance, f64)>>,
     parse_failures: std::sync::atomic::AtomicU64,
 }
 
@@ -140,7 +145,7 @@ pub async fn start_server(
     let balance_state: Option<Arc<BalanceState>> = config.balance.clone().map(|c| {
         Arc::new(BalanceState {
             config: c,
-            value: RwLock::new(None),
+            observed: RwLock::new(None),
             parse_failures: std::sync::atomic::AtomicU64::new(0),
         })
     });
@@ -793,7 +798,12 @@ async fn status_handler(State(state): State<AppState>) -> Html<String> {
         None => String::new(),
         Some(bal) => {
             let cfg = &bal.config;
-            let snapshot = *bal.value.read().await;
+            let snapshot = bal
+                .observed
+                .read()
+                .await
+                .as_ref()
+                .map(|(p, ts)| (p.value, *ts));
             let failures = bal
                 .parse_failures
                 .load(std::sync::atomic::Ordering::Relaxed);
@@ -1365,16 +1375,26 @@ async fn poll_sms(
     if let Some(state) = balance {
         let cfg = &state.config;
         match crate::balance::latest_balance(cfg, &response.messages.message) {
-            Some(v) => {
-                let previous = state.value.read().await.map(|(val, _)| val);
-                if previous != Some(v) {
-                    crate::balance::record_balance(cfg, v);
+            Some(parsed) => {
+                // Act only on a reply we have not seen before. The inbox is
+                // re-parsed every poll, so comparing message dates is what
+                // separates "the provider answered again" from "the same
+                // message is still sitting there".
+                let is_new = state
+                    .observed
+                    .read()
+                    .await
+                    .as_ref()
+                    .is_none_or(|(prev, _)| prev.message_date != parsed.message_date);
+
+                if is_new {
+                    crate::balance::record_balance(cfg, &parsed);
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs_f64())
+                        .unwrap_or(0.0);
+                    *state.observed.write().await = Some((parsed, now));
                 }
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs_f64())
-                    .unwrap_or(0.0);
-                *state.value.write().await = Some((v, now));
             }
             None => {
                 // Only a failure if the sender wrote to us at all; otherwise

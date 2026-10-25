@@ -84,11 +84,25 @@ pub fn parse_value(pattern: &Regex, content: &str) -> Option<f64> {
     caps.get(1)?.as_str().trim().parse::<f64>().ok()
 }
 
+/// A balance read out of one provider message.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedBalance {
+    pub value: f64,
+    /// The modem's `Date` field for the message this came from, verbatim.
+    ///
+    /// Used to tell a *new* reply from the same reply seen again. The inbox is
+    /// re-parsed on every poll, so without this there is no way to distinguish
+    /// "the provider answered again" from "the old message is still sitting
+    /// there" -- and that distinction is the whole basis of staleness
+    /// detection.
+    pub message_date: String,
+}
+
 /// Pick the newest message from the configured sender whose body parses.
 ///
 /// Messages are ordered by the modem's `Date` field, which is
 /// `YYYY-MM-DD HH:MM:SS` and therefore sorts correctly as a string.
-pub fn latest_balance(config: &BalanceConfig, messages: &[SmsMessage]) -> Option<f64> {
+pub fn latest_balance(config: &BalanceConfig, messages: &[SmsMessage]) -> Option<ParsedBalance> {
     let mut candidates: Vec<&SmsMessage> = messages
         .iter()
         .filter(|m| m.phone.contains(&config.from))
@@ -96,8 +110,11 @@ pub fn latest_balance(config: &BalanceConfig, messages: &[SmsMessage]) -> Option
     candidates.sort_by(|a, b| b.date.cmp(&a.date));
 
     for m in candidates {
-        if let Some(v) = parse_value(&config.pattern, &m.content) {
-            return Some(v);
+        if let Some(value) = parse_value(&config.pattern, &m.content) {
+            return Some(ParsedBalance {
+                value,
+                message_date: m.date.clone(),
+            });
         }
         debug!(
             "Message from {} did not match the balance pattern",
@@ -114,19 +131,29 @@ fn now_unix() -> f64 {
         .unwrap_or(0.0)
 }
 
-/// Apply a parsed balance to the metrics.
-pub fn record_balance(config: &BalanceConfig, value: f64) {
+/// Apply a newly-arrived balance reply to the metrics.
+///
+/// Call this only when the message is one not seen before, identified by its
+/// date. The timestamp gauge means "when the provider last answered", which is
+/// what staleness detection needs -- so it must advance on every new reply
+/// whether or not the value moved, and must NOT advance when the same old
+/// message is re-parsed on the next poll.
+///
+/// Getting this wrong is not hypothetical: gating this on the *value* having
+/// changed made `SmserBalanceStale` fire after nine days of a stable balance,
+/// which is the normal state for a SIM that sends a few texts a month.
+pub fn record_balance(config: &BalanceConfig, balance: &ParsedBalance) {
     metrics::gauge!(
         "smser_account_balance",
         "provider" => config.provider.clone(),
         "currency" => config.currency.clone()
     )
-    .set(value);
+    .set(balance.value);
     metrics::gauge!("smser_account_balance_timestamp_seconds").set(now_unix());
     metrics::counter!("smser_balance_replies_parsed_total").increment(1);
     info!(
-        "Account balance for {}: {} {}",
-        config.provider, value, config.currency
+        "Account balance for {}: {} {} (reply dated {})",
+        config.provider, balance.value, config.currency, balance.message_date
     );
 }
 
@@ -190,6 +217,47 @@ mod tests {
 was £10.00. You have 1024MB of your data Boost available.";
 
     #[test]
+    fn test_parsed_balance_carries_the_message_date() {
+        // The date is what distinguishes a new reply from the same reply seen
+        // again, so it must survive parsing.
+        let messages = vec![msg(1, "+447950014111", "2026-10-20 23:31:57", REAL_REPLY)];
+        let got = latest_balance(&config(), &messages).expect("should parse");
+        assert_eq!(got.value, 10.00);
+        assert_eq!(got.message_date, "2026-10-20 23:31:57");
+    }
+
+    #[test]
+    fn test_same_value_from_a_newer_reply_is_a_distinct_observation() {
+        // The regression this guards against: a provider that answers weekly
+        // with an unchanged balance. Keying freshness off the value made
+        // SmserBalanceStale fire after nine days of a perfectly healthy SIM.
+        // Keying it off the message date distinguishes the two replies.
+        let week1 = vec![msg(1, "+447950014111", "2026-10-13 23:31:57", REAL_REPLY)];
+        let week2 = vec![msg(2, "+447950014111", "2026-10-20 23:31:57", REAL_REPLY)];
+
+        let a = latest_balance(&config(), &week1).unwrap();
+        let b = latest_balance(&config(), &week2).unwrap();
+
+        assert_eq!(a.value, b.value, "the balance genuinely did not change");
+        assert_ne!(
+            a.message_date, b.message_date,
+            "but they are different replies, and freshness must follow the reply"
+        );
+    }
+
+    #[test]
+    fn test_reparsing_the_same_inbox_yields_an_identical_observation() {
+        // The other half: polling again with nothing new must look identical,
+        // so the caller can tell there is no new reply and leave the timestamp
+        // alone.
+        let messages = vec![msg(1, "+447950014111", "2026-10-20 23:31:57", REAL_REPLY)];
+        assert_eq!(
+            latest_balance(&config(), &messages),
+            latest_balance(&config(), &messages)
+        );
+    }
+
+    #[test]
     fn test_parses_the_real_reply() {
         assert_eq!(parse_value(&pound_pattern(), REAL_REPLY), Some(10.00));
     }
@@ -214,11 +282,14 @@ Unlimited UK minutes, Unlimited UK text, 100 Intl minutes";
             msg(1, "38885", "2025-12-15 00:11:37", stale),
             msg(2, "+447950014111", "2026-09-28 23:49:25", REAL_REPLY),
         ];
-        assert_eq!(latest_balance(&config(), &messages), Some(10.00));
+        assert_eq!(
+            latest_balance(&config(), &messages).map(|b| b.value),
+            Some(10.00)
+        );
 
         // And on its own it is ignored entirely rather than read as zero.
         let only_stale = vec![msg(1, "38885", "2025-12-15 00:11:37", stale)];
-        assert_eq!(latest_balance(&config(), &only_stale), None);
+        assert!(latest_balance(&config(), &only_stale).is_none());
     }
 
     #[test]
@@ -243,14 +314,20 @@ Unlimited UK minutes, Unlimited UK text, 100 Intl minutes";
                 "Your latest balance was £7.77.",
             ),
         ];
-        assert_eq!(latest_balance(&config(), &messages), Some(10.00));
+        assert_eq!(
+            latest_balance(&config(), &messages).map(|b| b.value),
+            Some(10.00)
+        );
     }
 
     #[test]
     fn test_national_form_matches_international_sender() {
         // Requests go to 07950014111; replies arrive from +447950014111.
         let messages = vec![msg(1, "+447950014111", "2026-09-28 23:49:25", REAL_REPLY)];
-        assert_eq!(latest_balance(&config(), &messages), Some(10.00));
+        assert_eq!(
+            latest_balance(&config(), &messages).map(|b| b.value),
+            Some(10.00)
+        );
     }
 
     #[test]
@@ -261,7 +338,7 @@ Unlimited UK minutes, Unlimited UK text, 100 Intl minutes";
             "2026-09-28 23:49:25",
             "Your account is being upgraded, balance unavailable.",
         )];
-        assert_eq!(latest_balance(&config(), &messages), None);
+        assert!(latest_balance(&config(), &messages).is_none());
     }
 
     #[test]
@@ -281,7 +358,10 @@ Unlimited UK minutes, Unlimited UK text, 100 Intl minutes";
                 "Your latest balance was £4.50.",
             ),
         ];
-        assert_eq!(latest_balance(&config(), &messages), Some(4.50));
+        assert_eq!(
+            latest_balance(&config(), &messages).map(|b| b.value),
+            Some(4.50)
+        );
     }
 
     #[test]
