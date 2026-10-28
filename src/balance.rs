@@ -98,6 +98,49 @@ pub struct ParsedBalance {
     pub message_date: String,
 }
 
+/// Convert the modem's `Date` field to a Unix timestamp.
+///
+/// # The timezone is deliberately ignored
+///
+/// The modem reports `YYYY-MM-DD HH:MM:SS` in **its own local time** with no
+/// offset, and this treats it as UTC. On a host in Europe/London that is a skew
+/// of up to one hour, and the sign flips with daylight saving.
+///
+/// That is an accepted trade, not an oversight:
+///
+/// * The only consumer is `SmserBalanceStale`, which asks whether a reply has
+///   arrived in the last **nine days**. One hour is 0.5% of that threshold.
+/// * Resolving it properly needs the host's UTC offset, and
+///   `UtcOffset::current_local_offset()` deliberately fails in a multi-threaded
+///   process on Unix -- which smser is. Working around that means either
+///   reading the offset before the runtime starts or hardcoding a zone, both of
+///   which are more fragile than the error they remove.
+///
+/// So a balance can read as up to an hour older or newer than it truly is.
+/// Anything comparing this against wall-clock time to the minute will be wrong;
+/// nothing does.
+///
+/// Returns `None` when the field is not in the expected shape, so the caller
+/// can fall back rather than publishing a nonsense timestamp.
+pub fn message_date_to_unix(date: &str) -> Option<f64> {
+    let (d, t) = date.trim().split_once(' ')?;
+    let mut dp = d.split('-');
+    let (y, mo, da) = (dp.next()?, dp.next()?, dp.next()?);
+    let mut tp = t.split(':');
+    let (h, mi, se) = (tp.next()?, tp.next()?, tp.next()?);
+
+    let date = time::Date::from_calendar_date(
+        y.parse().ok()?,
+        time::Month::try_from(mo.parse::<u8>().ok()?).ok()?,
+        da.parse().ok()?,
+    )
+    .ok()?;
+    let time_of_day =
+        time::Time::from_hms(h.parse().ok()?, mi.parse().ok()?, se.parse().ok()?).ok()?;
+
+    Some(date.with_time(time_of_day).assume_utc().unix_timestamp() as f64)
+}
+
 /// Pick the newest message from the configured sender whose body parses.
 ///
 /// Messages are ordered by the modem's `Date` field, which is
@@ -149,7 +192,18 @@ pub fn record_balance(config: &BalanceConfig, balance: &ParsedBalance) {
         "currency" => config.currency.clone()
     )
     .set(balance.value);
-    metrics::gauge!("smser_account_balance_timestamp_seconds").set(now_unix());
+    // The reply's own date, not when we read it -- so a restart cannot reset
+    // the staleness clock and make an old figure look fresh. Falls back to now
+    // only if the modem sends a date we cannot parse, which would otherwise
+    // publish a nonsense timestamp.
+    let stamp = message_date_to_unix(&balance.message_date).unwrap_or_else(|| {
+        warn!(
+            "Could not parse the balance reply date {:?}; falling back to the current time",
+            balance.message_date
+        );
+        now_unix()
+    });
+    metrics::gauge!("smser_account_balance_timestamp_seconds").set(stamp);
     metrics::counter!("smser_balance_replies_parsed_total").increment(1);
     info!(
         "Account balance for {}: {} {} (reply dated {})",
@@ -215,6 +269,70 @@ mod tests {
     /// Verbatim from a real reply.
     const REAL_REPLY: &str = "Your latest balance (last usage - 28-09-2026 01:10:07) \
 was £10.00. You have 1024MB of your data Boost available.";
+
+    #[test]
+    fn test_message_date_to_unix() {
+        // Verified against `date -u -d "2026-10-20 23:31:57" +%s`.
+        assert_eq!(
+            message_date_to_unix("2026-10-20 23:31:57"),
+            Some(1792539117.0)
+        );
+        assert_eq!(message_date_to_unix("1970-01-01 00:00:00"), Some(0.0));
+        // Leap day, since the parser builds a real calendar date.
+        assert_eq!(
+            message_date_to_unix("2024-02-29 12:00:00"),
+            Some(1709208000.0)
+        );
+        // Surrounding whitespace is tolerated.
+        assert_eq!(
+            message_date_to_unix("  2026-10-20 23:31:57 "),
+            Some(1792539117.0)
+        );
+    }
+
+    #[test]
+    fn test_message_date_rejects_nonsense() {
+        // Each must yield None so the caller falls back rather than publishing
+        // a garbage timestamp.
+        for bad in [
+            "",
+            "not a date",
+            "2026-10-20",          // no time
+            "2026-13-01 00:00:00", // month 13
+            "2026-02-30 00:00:00", // not a real day
+            "2026-10-20 25:00:00", // hour 25
+            "2026-10-20 23:61:00", // minute 61
+            "2026/10/20 23:31:57", // wrong separators
+        ] {
+            assert!(
+                message_date_to_unix(bad).is_none(),
+                "should have rejected {:?}",
+                bad
+            );
+        }
+    }
+
+    #[test]
+    fn test_message_date_ordering_matches_string_ordering() {
+        // latest_balance sorts reply dates as strings; that must agree with
+        // chronological order or it could pick an older reply.
+        let dates = [
+            "2026-09-30 23:59:59",
+            "2026-10-01 00:00:00",
+            "2026-10-06 01:05:57",
+            "2026-10-20 23:31:57",
+        ];
+        let stamps: Vec<f64> = dates
+            .iter()
+            .map(|d| message_date_to_unix(d).unwrap())
+            .collect();
+        let mut sorted = stamps.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(
+            stamps, sorted,
+            "string order diverged from chronological order"
+        );
+    }
 
     #[test]
     fn test_parsed_balance_carries_the_message_date() {

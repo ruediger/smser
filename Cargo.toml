@@ -28,6 +28,7 @@ metrics = { version = "0.24.3", optional = true }
 metrics-exporter-prometheus = { version = "0.18.1", default-features = false, optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 regex = "1.13.1"
+time = "0.3.55"
 
 [features]
 default = ["server", "alertmanager", "modem"]

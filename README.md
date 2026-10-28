@@ -247,11 +247,47 @@ The `/metrics` endpoint exports the following Prometheus metrics:
 *   `smser_modem_last_probe_timestamp_seconds`: When the modem was last probed.
 *   `smser_version_info`: Version and git commit. A `-dirty` suffix means the binary
     was built from a modified working tree.
+*   `smser_account_balance{provider,currency}`: Account balance parsed from provider SMS.
+*   `smser_account_balance_timestamp_seconds`: Date of the reply the balance came from.
+*   `smser_balance_requests_sent_total`: Scheduled balance requests sent.
+*   `smser_balance_replies_parsed_total`: Balance values successfully parsed.
+*   `smser_balance_parse_failures_total`: Messages from the balance sender that did not match the pattern.
 
 The modem metrics are probed on a timer independent of SMS traffic. That is
 deliberate: sends only happen when an alert fires, which can be weeks apart, so
 without an independent probe a modem that has silently stopped working is only
 discovered at the moment it is needed.
+
+### Account balance
+
+Prepaid providers often report the balance only over SMS, and running out of
+credit kills the alerting path *silently* — the webhook is still accepted and
+smser still returns success. See the `--balance-*` flags; omitting
+`--balance-request-to` gives passive operation, which costs nothing.
+
+> **The balance timestamp is the reply's own date, with up to an hour of skew.**
+>
+> `smser_account_balance_timestamp_seconds` carries the date of the provider
+> message the figure came from, not the moment smser read it. That matters
+> because the inbox is re-parsed on every poll: stamping it with the read time
+> would let a restart reset the staleness clock and make a week-old balance look
+> seconds old.
+>
+> The modem reports `YYYY-MM-DD HH:MM:SS` in its own local time with no offset,
+> and smser treats it as UTC. On a host not running UTC that is a skew of up to
+> an hour, and the sign flips with daylight saving. This is deliberate: the only
+> consumer is a staleness check with a nine-day threshold, where an hour is
+> 0.5%. Resolving it properly needs the host's UTC offset, and
+> `UtcOffset::current_local_offset()` fails by design in a multi-threaded
+> process on Unix — the workarounds are more fragile than the error they remove.
+>
+> **Do not compare this metric against wall-clock time to the minute.**
+
+A balance is recorded only when the reply's date differs from the one already
+seen, so re-parsing the same inbox does not refresh the timestamp. An
+unparseable reply leaves the gauge at its last good value and increments
+`smser_balance_parse_failures_total` — reporting zero for a message that could
+not be read is how a false low-credit alert happens.
 
 ## Deployment
 
